@@ -241,15 +241,453 @@ retro can pull patterns out at the end.
 
 ---
 
+## 2026-04-28 — Phase 4: Disk cleanup (backlog C-1)
+
+Deleted `~/models/ui-venus-1.5-8b/ui-venus-1.5-8b-f16.gguf` (16 GB).
+The three quants (Q4_K_M, Q5_K_M, Q6_K) and the f16 mmproj remain.
+`ui-venus.service` restarted cleanly on Q6_K; `/health` returns `{"status":"ok"}`.
+Confirms the service has no runtime dependency on the f16 LLM weight —
+it was purely a re-quantize source. Re-creating it later would require
+re-downloading safetensors and re-running the convert step (~15 min).
+
+---
+
+## 2026-04-28 — Phase 5: Q5_K_M data point (backlog C-2)
+
+Phase 3 deferred Q5_K_M ("not worth a separate eval"). Ran the same
+Excalidraw toolbar identification task to fill the gap.
+
+| Metric | Q4_K_M | **Q5_K_M** | Q6_K |
+|---|---|---|---|
+| Tools identified | 11 | **11** (caught Hand, missed Selection) | 12 (caught Hand) |
+| Active-state color | "orange" (wrong) | **"orange" (wrong)** | "purple" (correct) |
+| Annotation detail | bare names | **parenthetical** ("Hand (panning)") | parenthetical |
+| Behavior | clean run | **30+ step send_keys loop** | clean run |
+| Active-tool claim | matched screenshot | **confabulated** (claimed rectangle active; screenshot showed Selection) | matched screenshot |
+
+Q5_K_M lands closer to Q4 than Q6 on the things that matter:
+- Same tool count as Q4 (11), and missed the Selection arrow that Q4
+  also missed despite Q5 catching the Hand tool that Q4 missed — net,
+  the same total.
+- Same wrong color call as Q4 ("orange" vs actual purple).
+- Hit a behavior failure neither Q4 nor Q6 hit: looped on `send_keys: esc`
+  for ~30 steps after the first activation, lost the rectangle's
+  active state, then claimed in the final summary that rectangle was
+  highlighted with an orange border — confabulation contradicted by
+  the verification screenshot, which shows Selection arrow active and
+  rectangle inactive.
+
+The annotation detail (parenthetical descriptions like "Hand (panning)")
+is the only Q6-like quality on Q5. Everything else is Q4-like or worse.
+
+**Updated recommendation**: Q5_K_M is *not* a midpoint — on this task
+it behaved as Q4-with-extra-instability. Keep Q6_K as default.
+The 800 MB VRAM saving from Q5 is not worth the quality regression
+and the new failure mode (loop-then-confabulate). If VRAM pressure
+ever forces a downgrade, go straight to Q4_K_M; Q5 has no clear win
+over either neighbor.
+
+**Caveat**: n=1 task. The confabulation behavior in particular could be
+run-to-run variance rather than a quant-induced regression. A second
+run on a different visual task would harden the conclusion. Not chasing
+that today — the ranking is clear enough to decide quant policy.
+
+---
+
+## 2026-04-28 — Phase 6: Recovery-hint prompt (backlog E-1) — negative result
+
+Tested whether a system-message addition could break the headless
+saucedemo loop-on-failed-click pattern from Smoke 2. Three runs on Q6_K,
+headless, max_steps=40, same task (login → cart → checkout → confirmation):
+
+| Run | Prompt addition | Login | Add-to-cart | Open cart | Steps used |
+|---|---|---|---|---|---|
+| Baseline | none | ✅ | ❌ looped 30+ steps | (didn't reach) | 40/40 |
+| Hint v1 | "if click does not change page state, try child / URL / send_keys" | ✅ | ✅ first try | ❌ looped 35+ steps on cart icon | 40/40 |
+| Hint v2 | aggressive: "next action MUST NOT be the same click ... never repeat" | ✅ | ✅ first try | ❌ looped 30+ steps on cart icon (tried sibling element [107] once) | 40/40 |
+
+### What v1 changed
+The hint *did* break the easier loop: in baseline the model couldn't get
+past the Add-to-cart button click (silent failure on a `<button>` —
+clicks were going through but state didn't update visibly). With v1 it
+cleared Add-to-cart on first try and reached the cart-icon stage —
+exactly Smoke 2's original failure point.
+
+### What neither version fixed
+The cart icon at saucedemo (`<div>#shopping_cart_container` whose only
+nav is via a child `<a>`) — both v1 and v2 looped 30+ times on the same
+DOM index. v2 was much more explicit:
+- "MUST NOT be the same click on the same element"
+- "never repeat a click on an element that just failed"
+- listed all three alternatives by name (child element / `go_to_url` / `send_keys`)
+
+In v2: **0 `go_to_url` calls, 0 `send_keys` calls** across 40 steps.
+The agent's own self-eval stated "Previous attempts to click the
+shopping cart icon failed to navigate to the cart page" while its next
+emitted action was still `click index: 104`. The model sees the failure
+and acknowledges it in text, then plans the same action anyway.
+
+### Conclusion
+The recovery-hint approach has a real but partial effect — it can break
+loops where the model's planning was just stuck on one option, but it
+cannot break loops where the model is genuinely confident in an action
+that's silently failing under the hood. The cart-icon case is the
+latter: from the model's screenshot view, clicking the icon is the
+right thing to do, and no amount of system-message prodding overrides
+that. The fix needs to be either:
+1. Framework-level: detect "click succeeded but no DOM mutation" and
+   force a different action (browser-use's loop-detection nudge is
+   close but evidently not strong enough — fired 35+ times in v2 and
+   the model kept clicking).
+2. Stack-level: don't run headless on sites with nested-anchor cart
+   patterns. CLAUDE.md already encodes this as a hard requirement.
+3. Action-level: add a `navigate_relative_url` action and a stronger
+   prior toward URL-direct navigation when a click fails — i.e. the
+   model needs *fewer* options to choose from when stuck, not the
+   same option re-emphasized.
+
+The original open question ("would extend_system_message with 'if
+action didn't change page, try X, Y, Z' fix the loop?") has its
+answer: **partial yes** for stuck-planning loops, **no** for
+silent-action-failure loops. Headed mode remains the operational
+recommendation for any nested-anchor-cart site.
+
+---
+
+## 2026-04-28 — Phase 7: Xvfb for unattended headed (backlog E-2) — negative result
+
+Tested whether `xvfb-run` (virtual X display) gives real-headed click
+semantics or inherits the headless click-failure bug. The
+distinguishing test is the saucedemo full-flow:
+
+- **Real headed** (Smoke 3): completes in 22 steps, no loops.
+- **Headless** (Smoke 2 / E-1 baseline): silent click failure on
+  Add-to-cart and/or cart icon, loops to step budget.
+- **Xvfb-headed** (this run): expected one of the two.
+
+### Run
+
+```
+xvfb-run -a -s "-screen 0 1920x1080x24" .venv/bin/python -u \
+  scripts/smoke_browser_use.py > /tmp/smoke_xvfb.log 2>&1
+```
+
+`headless=False`, no parent `DISPLAY`/`XAUTHORITY` set.
+
+### Result: Xvfb behaves like headless
+
+- Login: ✅ on first try
+- Add-to-cart: ❌ 34 consecutive failed clicks on the Sauce Labs Backpack
+  button before the agent gave up. Same silent-click pattern as the
+  E-1 baseline.
+- 30 loop-detection nudges fired across the 40-step budget.
+- Verification screenshot: inventory page, all "Add to cart" buttons
+  still visible (none flipped to "Remove"), cart icon empty.
+- Agent honestly reported the failure rather than confabulating success.
+
+### What this means
+
+The nested-anchor / silent-click failure mode is **not** specific to
+Chromium's `--headless` flag — it reproduces under headed-Chromium
+running against a virtual X display. The bug appears to be tied to
+the *kind* of display surface, not the headless mode itself: a real
+compositor (Plasma+Wayland via Xwayland, in the Smoke-3 setup) lets
+clicks propagate correctly through nested DOM, while a synthetic
+Xvfb display does not.
+
+This is a stronger negative result than expected — `xvfb-run` is the
+standard "headless headed" trick for CI/cron. It works for a lot of
+browser automation but evidently not for this stack's specific click
+issue.
+
+### Operational consequences
+
+- **No xvfb-based unattended path.** Cron / systemd timer / SSH-only
+  hosts cannot run these smoke tests without a real X session.
+- Possible alternatives, not yet tested:
+  1. Run a persistent Plasma session as the user under
+     `systemd --user`, run smoke tests against its `:0` from cron.
+     Heavyweight but matches Smoke 3 exactly.
+  2. Try `--ozone-platform=headless` (Chromium's newer headless mode,
+     different code path from Playwright's default headless).
+  3. Try a dedicated VNC server (Xvnc) instead of Xvfb — different
+     synthetic input path.
+- For now: **headed mode requires the user to be logged in to Plasma.**
+  Document and accept the limitation rather than chase fixes.
+
+### Caveat
+
+n=1. The failure could be xvfb-specific *or* could be reproduce-able
+on any synthetic-X display. Not chasing further unless an unattended
+path becomes a hard requirement.
+
+---
+
+## 2026-04-28 — Phase 8: Cart-page verification on Home Depot (backlog E-3)
+
+Closed the Smoke 7 verification gap by extending the task to navigate
+to `/mycart/home` and report cart contents from the cart page itself,
+not from agent memory.
+
+### First run (max_steps=40) — instructive partial
+
+- 40-step ceiling hit before reaching `/mycart/home`.
+- Agent reported 2/3 items added: MetalTech Mobile Baker Scaffolding
+  ($1,236.65) + Werner Multi-Position Ladder ($174.00).
+- Verification screenshot: Home Depot's "Added to Cart" side panel
+  showing **only Fakro Attic Ladder, Qty 2, $1,720.00**. Neither
+  scaffolding nor Werner ladder visible.
+- Couldn't fully resolve the contradiction without the cart page.
+  Two readings: (a) side panel only displays the most recent add,
+  others might still be in cart; (b) agent confabulated item names
+  from its `Memory:` log when its retried Add-to-Cart clicks were
+  actually adding the same Fakro item multiple times.
+- Bumped `max_steps` from 40 to 60 and re-ran.
+
+### Second run (max_steps=60) — successful, with a new finding
+
+Completed in 49 steps. Reached `/mycart/home`. Agent reported:
+
+- Subtotal: **$4,833.00**
+- Savings: **-$898.80**
+- Total: **$3,934.20**
+- 3 distinct items: Fakro Attic Ladder, MetalTech Saferstack Scaffold
+  Section, Werner 5-in-1 Multi-Position Ladder.
+
+Verification screenshot: cart page in view. Subtotal, savings, total
+and the visible item (Fakro at $576) match the report exactly. The
+"Pickup, Western Hills (3 items)" indicator confirms 3 distinct SKUs.
+Other two items would require scrolling.
+
+### New finding: Add-to-Cart retries silently inflate quantity
+
+Cart header in the run-2 screenshot reads `CART (15)` — the count of
+total units, not distinct SKUs. With only 3 distinct items, that's
+12 redundant additions. The "element index issues" the agent
+hand-waved during retry attempts in run 1 were *not* failures —
+the clicks were succeeding and bumping qty each time. The agent
+mis-classified successful adds as failures because the page state
+change didn't match its expectation of a navigation, when in fact
+the change was a +1 to the cart icon badge it didn't notice.
+
+This is the inverse of the E-1 silent-failure pattern: there, clicks
+silently *failed* and the agent kept retrying. Here, clicks silently
+*succeeded* and the agent kept retrying. Both are state-feedback
+problems — the agent's mental model of "did my click do anything"
+is unreliable on Home Depot specifically.
+
+### Operational consequences
+
+- Step budget: 40 was sufficient for Smoke 7's report-from-memory;
+  60 is needed if you also want cart-page verification. Default the
+  workbench to 40 (already is) but bump for tasks that explicitly
+  add a verification step.
+- For real shopping automation: between each Add-to-Cart, navigate
+  to /mycart/home (or read the cart-icon badge into the prompt) to
+  prevent unintended duplicate adds. Don't trust the
+  click-then-evaluate-page-state heuristic on Home Depot.
+
+### Smoke 7 status
+
+The original Smoke-7 report ("2 items added: Milwaukee M18 trimmer
+$349.00, Costa Farms ZZ Plant $19.97") was likely accurate for the
+items it named, but the cart probably contained quantity > 1 of one
+or both items due to the same retry-inflation pattern. We can't
+re-verify retroactively; treat the original cart count as a lower
+bound on units, not an exact figure.
+
+### Acceptance
+
+- ✅ Verification screenshot shows the cart page with at least 2
+  distinct items confirmed via the "(3 items)" indicator.
+- ✅ Agent's reported subtotal, savings, total, and visible item name
+  all match the screenshot.
+- ✅ This phase entry serves as the Smoke-7-lineage update.
+
+---
+
+## 2026-04-28 — Phase 9: Custom `drag` action (backlog F-1)
+
+**Goal**: give browser-use a real drag primitive so canvas tasks (Excalidraw,
+Figma, drag-to-reorder) become reachable. browser-use 0.12.6 ships only
+index-click and coordinate-click; `send_keys` is keyboard-only. There is no
+mouse-drag event, and the `evaluate`-injected `dispatchEvent` path doesn't
+trigger trusted pointer pipelines.
+
+### What was built
+`scripts/drag_action.py` — a registrable action that issues raw CDP
+`Input.dispatchMouseEvent` events (mousePressed → 10 mouseMoved
+intermediates → mouseReleased) via the same `cdp_use` client browser-use
+already uses internally. Wired into `scripts/smoke_browser_use.py` by
+constructing a `Tools()` explicitly, calling `register_drag(tools)`, and
+passing `tools=tools` to `Agent(...)`.
+
+The action signature is `drag(x1, y1, x2, y2)` taking CSS-pixel viewport
+coordinates. `BrowserSession` is auto-injected by browser-use's
+`Tools.registry.action` decorator (special-named param).
+
+### Smoke test
+- TASK: open https://excalidraw.com, send Escape, send 'r' to activate
+  rectangle tool, drag from (700,400) to (1100,600), screenshot.
+- 4 steps, agent reported success.
+- Independent verification screenshot (`/tmp/smoke_final.png`): a
+  rectangle is clearly rendered on the canvas, selected with eight resize
+  handles, and Excalidraw's right-side properties panel is showing
+  Stroke / Background / Stroke width / Sloppiness / Edges — confirming
+  the shape is a real Excalidraw element, not a visual artifact.
+- Rectangle position matches the drag coordinates (right half of canvas,
+  upper-middle vertical region).
+
+### What worked
+- CDP synthetic mouse events are *trusted* (matches the failure-mode
+  prediction in F-1): Excalidraw's pointerdown/pointermove/pointerup
+  pipeline registers them and creates a real shape.
+- Required exactly the parameters listed in the F-1 stub plus
+  `buttons: 1` on press/move (without it, some pointer pipelines treat
+  the mouseMoved as a passive hover). The release uses `buttons: 0`.
+- Including `clickCount: 1` on press and release (clickCount: 0 on the
+  intermediate moves, by virtue of CDP defaults) avoided any
+  click-handler firing simultaneously with the drag.
+- Smooth path of 10 intermediate moves was sufficient — Excalidraw's
+  pointermove handler fires per move event and assembles the shape
+  geometry; no visible artifact from sub-pixel rounding.
+
+### Model-side observation
+The model used the `drag` action correctly on first attempt — it took the
+literal coordinates from the prompt (`x1=700, y1=400, x2=1100, y2=600`)
+without trying to remap them to internal model space or re-derive them
+from the screenshot. This was intentional in the prompt design (we
+wanted to validate the action plumbing, not grounding). For F-2 / S-1
+work where the model emits its own coordinates, the remapper still
+matters — see backlog F-2.
+
+### Acceptance
+- ✅ Rectangle visible on canvas in post-run screenshot.
+- ✅ Action registers cleanly via `Tools.registry.action(...)` decorator
+  without modifying browser-use source.
+- ✅ Reusable: any future smoke test can `from drag_action import
+  register_drag` and gain the capability without ceremony.
+
+### Caveats / what to watch
+- Action takes raw viewport pixels. If the agent (in a future test)
+  sources coordinates from a screenshot rendered at a different scale
+  than the live viewport, results will be off. browser-use already
+  handles a similar concern for its coordinate-click via
+  `_convert_llm_coordinates_to_viewport`; we do *not* call that here
+  because the prompt supplied viewport coordinates directly. F-2's
+  remapper is the right place to centralize that logic.
+- Drag is emitted at left-button only. Right-drag, middle-drag,
+  modifier-key drag (e.g. Shift to constrain Excalidraw to a square) are
+  not exposed. Add params if a future task needs them — don't preemptively
+  generalize.
+
+---
+
+## 2026-04-28 — Phase 10: Coordinate remapper (backlog F-2)
+
+**Goal**: build the helper that converts UI-Venus's emitted coordinates
+back to actionable viewport pixels, so we can drive the model's *native*
+grounding output (instead of always going through browser-use's DOM index
+protocol). Prerequisite for S-1 (custom CDP client).
+
+### What the upstream code says
+Cloned-by-eye from `inclusionAI/UI-Venus@main` (commit on 2026-04-28):
+
+- `models/grounding/ui_venus1_5_gd.py` `_parse_point` — the grounding-head
+  emits `[x, y]` and the upstream code divides each by **1000** to get
+  [0,1] proportions. Coordinates are 0-1000 normalized regardless of
+  input image dimensions.
+- `models/navigation/ui_venus_navi_agent.py` `_rescale_coordinate` — the
+  navigation head (used with the `<think>/<action>/<conclusion>` chat
+  template) emits coordinates in the model's **resized-image pixel space**
+  after Qwen3-VL `smart_resize`. Inverse-remap is
+  `viewport_xy = model_xy * orig_size / resized_size`.
+
+So there are *two* coordinate conventions, picked by which prompt format
+is used. The merged 8B model supports both prompts.
+
+Smart-resize parameters from `~/models/ui-venus-1.5-8b/hf/preprocessor_config.json`:
+`patch_size=16, merge_size=2 → factor=32`, `min_pixels=65536`,
+`max_pixels=16777216`.
+
+### What was built
+`scripts/coord_remap.py` — pure-Python (no transformers dep at runtime):
+- `smart_resize(h, w, ...)` — replicates Qwen3-VL's resize policy.
+- `grounding_remap(model_xy, viewport_size)` — for 0-1000 normalized.
+- `navigation_remap(model_xy, viewport_size)` — for resized-pixel space.
+- 6-case self-test (landscape, portrait, square × both conventions),
+  passing.
+
+`scripts/coord_remap_demo.py` — POSTs a screenshot + grounding instruction
+to the local llama.cpp endpoint, parses `[x, y]`, prints both
+interpretations, and saves an annotated PNG with both points marked
+(lime = grounding, red = navigation).
+
+### Empirical result on the merged 8B
+Demo run against `/tmp/smoke_final.png` (the F-1 Excalidraw screenshot
+with a rectangle drawn at viewport (700,400)–(1100,600); image is
+4800×2708 because browser-use ran at DPR≈2.5):
+
+```
+Instruction: the rectangle drawn on the canvas
+Raw model response: '[466, 460]'
+Grounding interpretation:  (2237, 1246)   ← image-pixel
+Navigation interpretation: (466,  458)    ← image-pixel
+```
+
+Independent visual verification (`/tmp/coord_remap_demo.png`):
+- **Lime ring at (2237, 1246)** — dead center of the drawn rectangle.
+  The rectangle spans roughly (1750,1000)–(2750,1500) in image pixels;
+  (2237, 1246) is the geometric centroid.
+- **Red ring at (466, 458)** — lands inside the white background-color
+  swatch in the left sidebar. Off by ~5×.
+
+**Conclusion**: with the grounding prompt, the merged 8B model emits
+0-1000 normalized coordinates. `grounding_remap` is the right helper for
+this inference mode. `navigation_remap` is preserved for the `<think>/
+<action>/<conclusion>` chat-template mode (which we'd use in S-1 for
+multi-step navigation), but is not what to apply here.
+
+### Acceptance
+- ✅ Helper has 6 test cases covering landscape/portrait/square viewports
+  for *both* coordinate conventions (3 each).
+- ✅ Demo prints raw + remapped coords; the annotated PNG provides
+  immediate visual ground truth.
+- ✅ Bonus: settled the question of which convention the merged 8B uses
+  (grounding-prompt → 0-1000 normalized). The backlog F-2 stub had
+  assumed only the resized-pixel-space convention; turns out the
+  simpler one is what's used in practice for grounding prompts.
+
+### Implications for S-1
+S-1's "custom CDP client" should use the grounding prompt for single-shot
+clicks (one screenshot → one coordinate) and only switch to the
+navigation chat template if multi-step `<think>/<action>` reasoning
+becomes necessary. Coord conversion to viewport CSS pixels is then
+`grounding_remap(raw, css_viewport_size)` — note `css_viewport_size`,
+not screenshot pixel size, because CDP `Input.dispatchMouseEvent`
+expects CSS pixels and screenshots are at DPR-scaled device pixels.
+
+---
+
 ## Open questions for retro
 1. Are we leaving UI-Venus's grounding capability on the table by using
    browser-use? Worth a custom client for canvas-heavy use cases?
-2. Recovery prompt: would `extend_system_message` with "if action didn't
-   change page, try X, Y, Z" fix the loop-on-failed-click pattern?
+2. ~~Recovery prompt: would `extend_system_message` with "if action didn't
+   change page, try X, Y, Z" fix the loop-on-failed-click pattern?~~
+   **Answered in Phase 6**: partial yes for stuck-planning loops, no for
+   silent-action-failure loops (saucedemo cart icon). Fix needs framework
+   or action-level changes, not prompt-level.
 3. Q4_K_M vs Q5_K_M / Q6_K — does grounding accuracy degrade on visual tasks?
-   We have the f16 intermediate and can requantize cheaply.
-4. Headed mode is a hard requirement for sites with nested-anchor cart
+   Phase 5 added a Q5_K_M data point on the Excalidraw toolbar task; Q5
+   came out closer to Q4 than Q6 with an additional behavior anomaly. A
+   second visual task would harden the n=1 conclusion. f16 intermediate
+   has been deleted (see Phase 4); re-quantizing now means re-download +
+   re-convert from safetensors (~15 min).
+4. ~~Headed mode is a hard requirement for sites with nested-anchor cart
    patterns. For unattended runs, do we need `xvfb-run` or `--ozone-platform=
-   headless`? (Untested.)
+   headless`?~~ **Partially answered in Phase 7**: `xvfb-run` reproduces
+   the headless click-failure bug. `--ozone-platform=headless` and Xvnc
+   remain untested but are tier-2 options if an unattended path becomes
+   required.
 5. Context budget: 32K worked for a 22-step run. What's the ceiling before
    we need KV quantization (`--cache-type-k q8_0`) to keep VRAM in budget?

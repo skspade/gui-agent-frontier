@@ -34,16 +34,26 @@ looking for "what to do next."
 
 ## Browser-use smoke tests
 
-`scripts/smoke_browser_use.py` is the workbench. Edit the `TASK` string,
-run, inspect log + verification screenshot.
+`scripts/smoke_browser_use.py` is the runner; each smoke payload (TASK +
+per-test config) lives as its own file in `scripts/smokes/`. **Don't edit
+existing smoke payloads in place** — copy to a new file under `smokes/`
+and run that, so the history of probes stays intact and referenceable.
+
+A smoke module exposes module-level constants: `TASK` (required),
+`MAX_STEPS`, `HEADLESS`, `MAX_ACTIONS_PER_STEP`, `EXTEND_SYSTEM_MESSAGE`
+(all optional with defaults in the runner).
 
 - **Run command** (always log to file, never pipe through `tail`):
 
   ```
   DISPLAY=:0 XAUTHORITY=/run/user/1000/xauth_rVYaGJ XDG_RUNTIME_DIR=/run/user/1000 \
-    PYTHONUNBUFFERED=1 .venv/bin/python -u scripts/smoke_browser_use.py \
+    PYTHONUNBUFFERED=1 .venv/bin/python -u scripts/smoke_browser_use.py <smoke_name> \
     > /tmp/smoke.log 2>&1
   ```
+
+  `<smoke_name>` matches a file in `scripts/smokes/` (e.g.
+  `excalidraw_drag`, `excalidraw_toolbar`). Omitting it uses the runner's
+  `DEFAULT_SMOKE`.
 
 - **Headed mode (default)** is required for any nontrivial site. Headless
   Chromium has CDP-click quirks on nested anchors (e.g. saucedemo cart icon

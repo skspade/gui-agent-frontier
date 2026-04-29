@@ -1,37 +1,56 @@
 """
-Smoke test: drive browser-use against the local UI-Venus-1.5-8B llama.cpp server.
+Smoke runner: drive browser-use against the local UI-Venus-1.5-8B llama.cpp
+server. Each smoke payload lives in `scripts/smokes/<name>.py` so we keep
+a permanent history of probes — never edit a payload in place; copy it to
+a new file under `smokes/` instead.
 
 Run:
     cd /home/seans/Source/vision-model
-    .venv/bin/python scripts/smoke_browser_use.py
+    .venv/bin/python scripts/smoke_browser_use.py [<smoke_name>]
+
+If <smoke_name> is omitted, defaults to DEFAULT_SMOKE below.
+
+Each smoke module may define:
+    TASK                  (required) — the agent task string
+    MAX_STEPS             (default 40)
+    HEADLESS              (default False)
+    MAX_ACTIONS_PER_STEP  (default 2)
+    EXTEND_SYSTEM_MESSAGE (default None)
 """
 
 import asyncio
+import importlib
 import os
+import sys
 
-from browser_use import Agent, Browser, ChatOpenAI
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from drag_action import register_drag  # noqa: E402
+
+from browser_use import Agent, Browser, ChatOpenAI, Tools  # noqa: E402
 
 CHROME_PATH = "/home/seans/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome"
 SERVER_URL = "http://localhost:8080/v1"
 MODEL = "ui-venus-1.5-8b"
-TASK = (
-    "Open https://excalidraw.com and dismiss any welcome dialog by sending "
-    "Escape via send_keys (do NOT use evaluate). Then, using ONLY the "
-    "screenshot, do all of the following: "
-    "(1) describe what is currently drawn on the canvas (or say 'empty' if "
-    "nothing is drawn), "
-    "(2) list every tool icon you can see in the top toolbar in order from "
-    "left to right - include EVERY icon you see, even if you are not sure "
-    "what it represents (give your best guess for each), "
-    "(3) click the rectangle tool, "
-    "(4) confirm visually in the next screenshot that the rectangle tool is "
-    "now highlighted as active in the toolbar, "
-    "(5) report a final summary listing the toolbar tools and the active "
-    "tool. Be thorough about counting toolbar icons - do not stop at 'eraser'."
-)
+DEFAULT_SMOKE = "excalidraw_toolbar"
 
 
-async def main() -> None:
+def load_smoke(name: str):
+    return importlib.import_module(f"smokes.{name}")
+
+
+async def main(smoke_name: str) -> None:
+    smoke = load_smoke(smoke_name)
+    task = smoke.TASK
+    max_steps = getattr(smoke, "MAX_STEPS", 40)
+    headless = getattr(smoke, "HEADLESS", False)
+    max_actions_per_step = getattr(smoke, "MAX_ACTIONS_PER_STEP", 2)
+    extend_system_message = getattr(smoke, "EXTEND_SYSTEM_MESSAGE", None)
+
+    print(f"===== SMOKE: {smoke_name} =====")
+    print(f"max_steps={max_steps} headless={headless} "
+          f"max_actions_per_step={max_actions_per_step} "
+          f"extend_system_message={'yes' if extend_system_message else 'no'}")
+
     llm = ChatOpenAI(
         model=MODEL,
         base_url=SERVER_URL,
@@ -47,21 +66,29 @@ async def main() -> None:
     browser = Browser(
         is_local=True,
         executable_path=CHROME_PATH,
-        headless=False,
+        headless=headless,
         chromium_sandbox=False,
         args=["--no-sandbox", "--disable-dev-shm-usage"],
         keep_alive=True,
     )
 
-    agent = Agent(
-        task=TASK,
+    tools = Tools()
+    register_drag(tools)
+
+    agent_kwargs = dict(
+        task=task,
         llm=llm,
         browser=browser,
+        tools=tools,
         use_vision=True,
-        max_actions_per_step=2,
+        max_actions_per_step=max_actions_per_step,
     )
+    if extend_system_message:
+        agent_kwargs["extend_system_message"] = extend_system_message
 
-    history = await agent.run(max_steps=40)
+    agent = Agent(**agent_kwargs)
+
+    history = await agent.run(max_steps=max_steps)
     final = history.final_result() if hasattr(history, "final_result") else None
     print("\n===== FINAL =====")
     print(final or "(no final_result)")
@@ -80,4 +107,5 @@ async def main() -> None:
 
 if __name__ == "__main__":
     os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
-    asyncio.run(main())
+    smoke_name = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SMOKE
+    asyncio.run(main(smoke_name))
