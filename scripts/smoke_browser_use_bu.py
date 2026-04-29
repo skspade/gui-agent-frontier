@@ -18,6 +18,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import harness_patches  # noqa: F401 - side effects (defensive whitespace trim)
 from drag_action import register_drag  # noqa: E402
 
 from browser_use import Agent, Browser, ChatOpenAI, Tools  # noqa: E402

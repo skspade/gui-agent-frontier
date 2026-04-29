@@ -24,13 +24,14 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import harness_patches  # noqa: F401 - side effects (defensive whitespace trim)
 from drag_action import register_drag  # noqa: E402
 
 from browser_use import Agent, Browser, ChatOpenAI, Tools  # noqa: E402
 
 CHROME_PATH = "/home/seans/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome"
 SERVER_URL = "http://localhost:8080/v1"
-MODEL = "ui-venus-1.5-8b"
+MODEL = os.environ.get("MODEL", "ui-venus-1.5-8b")
 DEFAULT_SMOKE = "excalidraw_toolbar"
 
 
@@ -58,7 +59,7 @@ async def main(smoke_name: str) -> None:
         temperature=0.0,
         frequency_penalty=0.0,
         reasoning_effort="none",
-        max_completion_tokens=2048,
+        max_completion_tokens=int(os.environ.get("MAX_TOKENS", "2048")),
         add_schema_to_system_prompt=False,
         dont_force_structured_output=False,
     )
