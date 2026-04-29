@@ -706,28 +706,41 @@ Implementation plan: `docs/plans/2026-04-28-s1-custom-cdp-client-plan.md`.
   `Launch(app='...')`, `CallUser(content='...')`. Coords are 0–1000
   integers.
 
-### Test 1 — saucedemo headless
-- Steps: 8 · Wall: 21.9s · Outcome: `done` (model self-reported)
-  but **visually failed**.
-- The login flow (4 steps: click username, type, click password, type,
-  click Login) worked perfectly. Inventory page reached.
-- Add-to-cart click missed by ~10–20 px (model coord (384, 542) → viewport
-  (~491, 356), landed between products in dead space).
-- Cart-icon click coord (952, 40) → viewport (1218, 26), plausibly within
-  the icon's bounding box, but `Page.captureScreenshot` after the click
-  shows the page still on `/inventory.html`. Either the click was 1–2 px
-  outside the hit target, or `Input.dispatchMouseEvent` against the
-  nested anchor in `--headless=new` doesn't trigger the route handler —
-  the same DOM pattern that broke browser-use's CDP-click in Phase 2.
-- The model self-reported `Finished(...)` after the failed cart click
-  without verifying the page state. CLAUDE.md operational rule 3
-  reaffirmed: agent self-reports cannot be trusted; the post-run
-  screenshot is ground truth.
+### Test 1 — saucedemo, both modes
+**Headless run** (`saucedemo_headless`): 8 steps · 21.9s · `done`
+self-reported, **visually failed**.
+- Login flow (4 steps) worked perfectly. Inventory page reached.
+- Add-to-cart click coord (384, 542) → viewport (~491, 356), landed in
+  dead space between product cards.
+- Cart-icon click coord (952, 40) → viewport (1218, 26), in the icon's
+  rough vicinity. Page stayed on `/inventory.html`.
+- Model emitted `Finished(...)` without verifying.
+
+**Disambiguation: headed run** (`saucedemo_headed`, follow-up after the
+initial Phase 11 write-up): 8 steps · 43.1s · `done` self-reported,
+**also visually failed**.
+- Same login success, same Add-to-cart miss (coord (381, 579) →
+  viewport (469, 356)), same cart-icon miss (coord (945, 44) → viewport
+  (1164, 27), ~20 px left of the icon center).
+- Cart badge never appeared in any post-Add-to-cart screenshot in
+  either mode → Add-to-cart click also missed in both runs.
+
+**Conclusion**: the Phase 11 initial hedge ("either coord precision, or
+`--headless=new` nested-anchor rendering bug") collapses to **coord
+precision**. The same misses happen in headed mode, so the headless
+rendering theory is ruled out. The model mis-grounds small UI targets
+in dense layouts by 20–50+ px regardless of mode. Large well-spaced
+targets (login form fields, the Excalidraw rectangle-tool glyph in a
+sparse toolbar) ground accurately; product-card buttons (~80 px wide
+in a 4×2 grid) and the cart icon (~30×30 px in the corner) do not.
+
 - Browser-use baseline (Phase 2 Smoke 2): looped infinitely on the cart
   icon in `--headless`, never completed.
-- **Comparison**: technical tie. Browser-use loops; the custom client
-  reports false success in 22s. Neither reaches `/cart.html` in
-  headless. The headless DOM trap is a layer below the agent framework.
+- **Comparison**: divergent failure modes, neither succeeds.
+  Browser-use loops; the custom client reports false success in 22-43s.
+  Custom client trivially beats browser-use on wall-clock-to-give-up
+  but neither user-visibly succeeds. The bottleneck is the model's
+  visual grounding precision on small targets, not framework choice.
 
 ### Test 2 — Excalidraw toolbar (canvas-heavy, headed)
 - Steps: 3 · Wall: 23.9s · Outcome: `done` and **visually verified**.
@@ -761,27 +774,31 @@ Implementation plan: `docs/plans/2026-04-28-s1-custom-cdp-client-plan.md`.
   failure is below the framework layer.
 
 ### Implications
-- For canvas-heavy tasks, the custom client is the right tool. Step
-  count and code-size both drop sharply vs. browser-use.
-- For nested-anchor headless DOM traps (saucedemo cart-icon), neither
-  framework is enough — the failure is in `Input.dispatchMouseEvent`'s
-  interaction with `--headless=new`'s rendering of nested `<a>`
-  elements. Headed Chromium plus visual grounding may sidestep this;
-  worth a `saucedemo_headed` payload as a future probe.
-- Honesty prompting (the "report what blocked you rather than
-  pretending to succeed" line) was insufficient — the model still
-  emitted `Finished` on a failed cart click. A future improvement
-  could verify-then-finish: take a screenshot after `Finished`, ask
-  the model "does this match the task goal?" — but that's beyond S-1
-  scope.
+- For canvas-heavy tasks with sparse, well-spaced targets, the custom
+  client is the right tool. Step count and code-size both drop sharply
+  vs. browser-use.
+- For dense small-target UIs (saucedemo product grid, top-right cart
+  icon), the merged 8B's visual grounding is not precise enough — both
+  headless AND headed runs miss by 20–50+ px on the same targets.
+  Larger model (UI-Venus-1.5-30B-A3B, per the README's benchmark
+  table), grounding-prompt single-shot mode for individual click
+  decisions instead of full navigation chat template, or DOM-augmented
+  prompts (i.e. just use browser-use for these UIs) are the three
+  obvious mitigations.
+- Honesty prompting ("report what blocked you rather than pretending to
+  succeed") was insufficient — the model emitted `Finished` on a
+  failed cart click in both modes. A verify-then-finish wrapper (take
+  screenshot after `Finished`, ask the model "does this satisfy the
+  task?") would have caught it; deferred as future work.
 
 ### Caveats
-- Both runs are n=1 on a hot llama.cpp server (Q6_K, 32K context, f16
-  KV). Replication on different runs / different sites would harden
-  the conclusions. Excalidraw in particular benefits from a clean,
-  static page; sites with popups, A/B tests, or shadow-DOM may behave
-  differently.
-- Run artifacts preserved at `/tmp/custom_agent_*_saucedemo*` and
+- Three runs total, n=1 each (saucedemo headless, saucedemo headed,
+  Excalidraw headed). Replication on different runs / different sites
+  would harden the conclusions. Excalidraw in particular benefits from
+  a clean, static page; sites with popups, A/B tests, or shadow-DOM
+  may behave differently.
+- Run artifacts preserved at `/tmp/custom_agent_*_saucedemo*`,
+  `/tmp/custom_agent_*_saucedemo_headed*`, and
   `/tmp/custom_agent_*_excalidraw*` — they will be cleared next reboot
   (tmpfs).
 
