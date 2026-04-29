@@ -97,6 +97,21 @@ interpretations on the screenshot, confirm which lands on the asked-for
 target. If the result surprises us, the remapper is a one-line swap
 thanks to F-2.
 
+**Verified 2026-04-28**: navigation chat template emits 0–1000 normalized
+coords on the merged 8B → `grounding_remap` is correct. Probe:
+`scripts/custom_agent_probe_nav.py` against `/tmp/smoke_final.png` with
+the upstream `USER_PROMPT` (system = "You are a helpful assistant.",
+user message = the GUI-Agent template from
+`inclusionAI/UI-Venus@main/models/navigation/utils.py`). Model emitted
+`<action>Click(box=(465, 457))</action>` — `grounding_remap` lands
+dead-center on the target rectangle (image-pixel (2232, 1239) vs target
+centroid (2250, 1250)); `navigation_remap` lands ~1100px to the left in
+empty canvas. The merged 8B uses the same 0–1000 convention for both
+prompt modes; upstream `_rescale_coordinate` is from the pre-merge
+specialist checkpoint and does not apply here. Action grammar is
+`Click(box=(x, y))` with parens (not `click(box=[x,y])` with
+brackets) — Task 2's `parse_action` regex needs to match this.
+
 ## Browser launch
 
 - **Headless saucedemo**: spawn chromium with
