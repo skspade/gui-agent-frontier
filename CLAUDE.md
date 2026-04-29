@@ -14,23 +14,44 @@ looking for "what to do next."
 
 ## Inference server
 
-- **Service**: `ui-venus.service` (systemd, runs as user `seans`)
+- **Service**: `vision-model.service` (systemd, runs as user `seans`).
+  Renamed from `ui-venus.service` in Phase 12 — the unit is no longer
+  model-specific, it just runs whatever the active swap target is.
 - **Endpoint**: `http://localhost:8080/v1/...` (OpenAI-compatible) and
   `http://192.168.0.159:8080/v1/...` from LAN
-- **Default quant**: Q6_K. (Q4_K_M was the original deploy; Q6_K won the A/B
-  on visual icon ID at no measurable speed cost. See findings phase 3.)
+- **Default model**: `ui-venus-1.5-8b` at Q6_K. MAI-UI-8B was evaluated in
+  Phase 12 and rejected as default (regression on visual grounding); its
+  weights stay on disk for re-test. Phase 13 evaluated four 30B-A3B-class
+  candidates (UI-Venus-1.5-30B-A3B, Holo2-30B-A3B, bu-30b-a3b-preview,
+  Holo1.5-7B as part of a split design) — none cleared the rubric; weights
+  stay on disk for future tests at higher quant or against different
+  long-horizon tasks.
 - **Context**: 32K. Browser-use prompts with screenshots eat ~17K, so 16K is
   too small. 32K fits comfortably in 16GB VRAM with Q6_K + f16 mmproj +
   f16 KV.
-- **Swap quants**: `sudo bash scripts/swap_quant.sh <Q4_K_M|Q5_K_M|Q6_K|f16>`.
-  The script restarts the service and waits for `/health` to come back. The
-  mmproj only exists in f16; the script always restores that line.
-- **Model files**: `~/models/ui-venus-1.5-8b/`
-  - `ui-venus-1.5-8b-Q4_K_M.gguf` (4.7G)
-  - `ui-venus-1.5-8b-Q5_K_M.gguf` (5.5G)
-  - `ui-venus-1.5-8b-Q6_K.gguf` (6.3G) — default
-  - `ui-venus-1.5-8b-f16.gguf` (16G — re-quantize source, can be deleted if disk pressure)
-  - `mmproj-ui-venus-1.5-8b-f16.gguf` (1.2G — vision encoder, always f16)
+- **Swap models / quants**: `sudo bash scripts/swap_model.sh <model> [quant]`.
+  Models in the registry: `ui-venus-1.5-8b`, `mai-ui-8b`,
+  `ui-venus-1.5-30b-a3b`, `holo2-30b-a3b`, `bu-30b-a3b-preview`,
+  `holo1.5-7b`. The 30B-A3B/Holo entries live on `/mnt/data/models/`; the
+  8B entries stay on `/home/seans/models/`. Script rewrites the unit,
+  daemon-reloads, restarts, and waits for `/health`. Passwordless sudoers
+  entry at `/etc/sudoers.d/vision-model-swap` lets `seans` run
+  `swap_model.sh` without a password — required for autonomous
+  swap-during-run flows. Legacy `swap_quant.sh ARG` still works as a
+  thin delegator that fixes the model to `ui-venus-1.5-8b`.
+- **Model files**:
+  - `~/models/ui-venus-1.5-8b/`
+    - `ui-venus-1.5-8b-Q4_K_M.gguf` (5.0G)
+    - `ui-venus-1.5-8b-Q5_K_M.gguf` (5.9G)
+    - `ui-venus-1.5-8b-Q6_K.gguf` (6.7G) — default
+    - `mmproj-ui-venus-1.5-8b-f16.gguf` (1.2G — vision encoder, always f16)
+  - `~/models/mai-ui-8b/`
+    - `mai-ui-8b-Q6_K.gguf` (6.7G)
+    - `mmproj-mai-ui-8b-f16.gguf` (1.2G)
+  - `/mnt/data/models/ui-venus-1.5-30b-a3b/` (Phase 13 — Q3_K_M, ~14GB)
+  - `/mnt/data/models/holo2-30b-a3b/` (Phase 13 — Q3_K_M, ~14GB)
+  - `/mnt/data/models/bu-30b-a3b-preview/` (Phase 13 — Q3_K_M, ~14GB)
+  - `/mnt/data/models/holo1.5-7b/` (Phase 13 — Q6_K, ~6GB)
 
 ## Browser-use smoke tests
 
@@ -53,7 +74,10 @@ A smoke module exposes module-level constants: `TASK` (required),
 
   `<smoke_name>` matches a file in `scripts/smokes/` (e.g.
   `excalidraw_drag`, `excalidraw_toolbar`). Omitting it uses the runner's
-  `DEFAULT_SMOKE`.
+  `DEFAULT_SMOKE`. The runner reads `MODEL=<alias>` from the environment
+  (default `ui-venus-1.5-8b`); set it to match whatever the
+  `vision-model.service` is currently serving (e.g. `MODEL=mai-ui-8b ...`
+  after `swap_model.sh mai-ui-8b`).
 
 - **Headed mode (default)** is required for any nontrivial site. Headless
   Chromium has CDP-click quirks on nested anchors (e.g. saucedemo cart icon

@@ -26,7 +26,25 @@ be done without reading the whole doc.
 ---
 
 ## E-4 — UI-Venus-1.5-30B-A3B deploy + saucedemo precision rerun
-**Effort: l · Priority: E**
+**Effort: l · Priority: E · Status: RESOLVED in Phase 13 (negative result, expanded scope)**
+
+Phase 13 evaluated UI-Venus-1.5-30B-A3B alongside three other 30B-A3B
+candidates (Holo2, bu-30b-a3b-preview, Holo1.5-7B as a split-design
+grounder). None promoted to default — see findings.md Phase 13 for
+the full table and verdict. Key takeaways relevant to the original E-4
+hypothesis:
+- 30B-A3B does not close the saucedemo gap at Q3_K_M. The actual
+  blocker is harness-level (browser-use element-index churn after page
+  repaints during add-to-cart), not coord precision.
+- UI-Venus-1.5-30B-A3B Q3 has a trailing-whitespace artifact in its
+  text-action output that breaks exact-match login; fixed by a generic
+  harness patch in `scripts/harness_patches.py`.
+- Q4_K_M was not tested. If Phase 13's harness-level conclusion is
+  wrong and the model does help, that's where to look first.
+
+The pre-Phase-13 hypothesis below is left in place for context only.
+
+---
 
 Phase 11 found that the merged 8B's visual grounding mis-targets small
 elements in dense layouts (saucedemo product-card buttons, top-right
