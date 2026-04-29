@@ -24,11 +24,23 @@ from scripts.custom_agent.model import (
     ParseError,
     parse_action,
     step as model_step,
+    step_grounding,
 )
 from scripts.custom_agent.actions import dispatch
 
 STEPS_DIR = Path("/tmp/custom_agent_steps")
 FINAL_PNG = Path("/tmp/custom_agent_final.png")
+
+# When True, every parsed Click action gets a follow-up grounding-prompt
+# lookup using its conclusion text; the refined coord replaces the
+# nav-mode coord before dispatch. Hypothesis (Phase 11 follow-up): if
+# nav-mode is split-attention'd between planning and grounding, a
+# dedicated grounding call should be more precise. Default False because
+# the n=1 saucedemo_headed test showed the merged 8B emits IDENTICAL
+# coords (within 1-2 px) in both modes -- the model merge unified the
+# heads, so there's no precision left to recover. Toggle if a future
+# task suggests the modes diverge.
+REFINE_CLICKS = False
 
 
 async def run(task_module) -> None:
@@ -61,6 +73,13 @@ async def run(task_module) -> None:
                 print(f"[step {step_idx}] model error: {e!r}", file=sys.stderr)
                 outcome = "model_error"
                 break
+
+            if REFINE_CLICKS and action.kind == "click" and action.xy is not None:
+                target = action.conclusion or action.raw
+                refined = step_grounding(target, b64)
+                if refined is not None and refined != action.xy:
+                    print(f"[step {step_idx}] refine: {action.xy} -> {refined} ({target[:60]!r})")
+                    action.xy = refined
 
             short = (
                 f"{action.kind} "

@@ -117,6 +117,48 @@ PressRecent()
 """
 
 
+# Grounding prompt (Phase 10 / scripts/coord_remap_demo.py).
+GROUNDING_PROMPT = (
+    "Output the center point of the position corresponding to the following "
+    "instruction: \n{instruction}. \n\nThe output should just be the "
+    "coordinates of a point, in the format [x,y]. Additionally, if the task "
+    "is infeasible (e.g., the task is not related to the image), the output "
+    "should be [-1,-1]."
+)
+_POINT_RE = re.compile(r"\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]")
+
+
+def step_grounding(
+    instruction: str, screenshot_b64: str, *, timeout: float = 60.0
+) -> tuple[int, int] | None:
+    """One-shot grounding lookup: returns (x, y) in 0-1000 normalized space.
+
+    Returns None on parse failure or the model's infeasible marker [-1, -1].
+    Caller must remap to viewport pixels via grounding_remap.
+    """
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                {"type": "text", "text": GROUNDING_PROMPT.format(instruction=instruction)},
+            ]},
+        ],
+        "max_tokens": 64,
+        "temperature": 0.0,
+    }
+    r = httpx.post(LLAMA_URL, json=payload, timeout=timeout)
+    r.raise_for_status()
+    raw = r.json()["choices"][0]["message"]["content"]
+    m = _POINT_RE.search(raw)
+    if not m:
+        return None
+    x, y = int(m.group(1)), int(m.group(2))
+    if (x, y) == (-1, -1):
+        return None
+    return (x, y)
+
+
 def step(task: str, history: list[Action], screenshot_b64: str, *, timeout: float = 120.0) -> str:
     """Send one turn to UI-Venus. Returns raw text response.
 

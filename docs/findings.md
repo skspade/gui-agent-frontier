@@ -780,11 +780,32 @@ in a 4×2 grid) and the cart icon (~30×30 px in the corner) do not.
 - For dense small-target UIs (saucedemo product grid, top-right cart
   icon), the merged 8B's visual grounding is not precise enough — both
   headless AND headed runs miss by 20–50+ px on the same targets.
-  Larger model (UI-Venus-1.5-30B-A3B, per the README's benchmark
-  table), grounding-prompt single-shot mode for individual click
-  decisions instead of full navigation chat template, or DOM-augmented
-  prompts (i.e. just use browser-use for these UIs) are the three
-  obvious mitigations.
+
+### Follow-up: refinement via dedicated grounding call (negative result)
+Tried adding a grounding-prompt-per-click refinement step
+(`REFINE_CLICKS=True` in `scripts/custom_agent.py`): after the nav-mode
+emits a `Click(box=(x,y))`, issue a second LLM call with the grounding
+prompt and the action's `conclusion` text as the target description,
+replace the nav-mode coord with the grounding-mode coord, dispatch.
+Hypothesis: nav-mode is split-attention'd between planning and
+grounding; a dedicated grounding call should be more precise.
+
+Result on `saucedemo_headed` rerun: refined coords were within **1–2
+pixels** of the nav-mode coords on all three clicks (login, add-to-cart,
+cart-icon). Same final screenshot, same false `Finished`. The merge
+truly unified the heads on the merged 8B — the modes emit the same
+answer, so there's no precision left to recover at this model size.
+
+Refinement code is preserved in `scripts/custom_agent.py` as a
+`REFINE_CLICKS` toggle (default off) in case a future task suggests
+the modes diverge. Run cost is +1 LLM call per click step (~2s).
+
+### Remaining mitigations for the saucedemo precision miss
+1. Larger model (UI-Venus-1.5-30B-A3B, per the README's benchmark
+   table — meaningfully higher ScreenSpot-Pro and OSWorld-G scores).
+2. DOM-augmented prompts (i.e. just use browser-use for these UIs).
+3. Verify-then-finish wrapper to at least catch the dishonest
+   self-report when grounding precision is the bottleneck.
 - Honesty prompting ("report what blocked you rather than pretending to
   succeed") was insufficient — the model emitted `Finished` on a
   failed cart click in both modes. A verify-then-finish wrapper (take
