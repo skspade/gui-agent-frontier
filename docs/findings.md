@@ -669,9 +669,132 @@ expects CSS pixels and screenshots are at DPR-scaled device pixels.
 
 ---
 
+## 2026-04-28 — Phase 11: Custom CDP client (backlog S-1)
+
+**Goal**: prove (or refute) that driving UI-Venus directly via CDP with
+its native navigation chat template can succeed where browser-use fails
+on canvas / nested-anchor pages.
+
+### What was built
+`scripts/custom_agent.py` (runner) + `scripts/custom_agent/` (browser,
+model, actions) + `scripts/custom_agent_tasks/` (per-task payloads).
+Total ~580 lines of agent code (excluding the throwaway probe script
+and the parse_action self-test). Serial loop, no DOM-indexed protocol,
+model is the planner end-to-end via the navigation chat template.
+
+Design: `docs/plans/2026-04-28-s1-custom-cdp-client-design.md`.
+Implementation plan: `docs/plans/2026-04-28-s1-custom-cdp-client-plan.md`.
+
+### Empirical findings retired on day one (Task 1 of the plan)
+- **Coordinate convention** (Phase 10 only verified the grounding prompt
+  path): the merged 8B emits 0–1000 normalized coords in **both** prompt
+  modes. Use `grounding_remap` for the navigation chat template too.
+  Upstream `models/navigation/ui_venus_navi_agent.py::_rescale_coordinate`
+  is from the pre-merge specialist checkpoint and does not apply to the
+  merged model. Probe: `scripts/custom_agent_probe_nav.py` against
+  `/tmp/smoke_final.png` (commit 6332f1c).
+- **System prompt is just `"You are a helpful assistant."`** — the
+  GUI-Agent task instruction (the long template with `### User Task`,
+  `### Previous Actions`, etc.) goes in the **user message**, not the
+  system message. Source: upstream
+  `models/navigation/ui_venus_navi_vllm.py::create_message_for_image`.
+- **Action grammar uses capitalized verbs and parens**, not the
+  lowercase/brackets the original plan sketched: `Click(box=(x, y))`,
+  `Type(content='...')`, `Scroll(start=..., end=..., direction='...')`,
+  `Drag(start=(x1, y1), end=(x2, y2))`, `Finished(content='...')`,
+  `Wait()`, `LongPress(box=(x, y))`, `PressBack/Home/Enter/Recent()`,
+  `Launch(app='...')`, `CallUser(content='...')`. Coords are 0–1000
+  integers.
+
+### Test 1 — saucedemo headless
+- Steps: 8 · Wall: 21.9s · Outcome: `done` (model self-reported)
+  but **visually failed**.
+- The login flow (4 steps: click username, type, click password, type,
+  click Login) worked perfectly. Inventory page reached.
+- Add-to-cart click missed by ~10–20 px (model coord (384, 542) → viewport
+  (~491, 356), landed between products in dead space).
+- Cart-icon click coord (952, 40) → viewport (1218, 26), plausibly within
+  the icon's bounding box, but `Page.captureScreenshot` after the click
+  shows the page still on `/inventory.html`. Either the click was 1–2 px
+  outside the hit target, or `Input.dispatchMouseEvent` against the
+  nested anchor in `--headless=new` doesn't trigger the route handler —
+  the same DOM pattern that broke browser-use's CDP-click in Phase 2.
+- The model self-reported `Finished(...)` after the failed cart click
+  without verifying the page state. CLAUDE.md operational rule 3
+  reaffirmed: agent self-reports cannot be trusted; the post-run
+  screenshot is ground truth.
+- Browser-use baseline (Phase 2 Smoke 2): looped infinitely on the cart
+  icon in `--headless`, never completed.
+- **Comparison**: technical tie. Browser-use loops; the custom client
+  reports false success in 22s. Neither reaches `/cart.html` in
+  headless. The headless DOM trap is a layer below the agent framework.
+
+### Test 2 — Excalidraw toolbar (canvas-heavy, headed)
+- Steps: 3 · Wall: 23.9s · Outcome: `done` and **visually verified**.
+- Step 0: `Click(box=(405, 62))` → rectangle tool selected (visual glyph
+  identification, no keyboard shortcut, no help-dialog bypass).
+- Step 1: `Drag(start=(412, 350), end=(512, 450))` → ~150×80 css-px
+  rectangle drawn near canvas center (8-step interpolated `mouseMoved`,
+  no need to bump step count).
+- Step 2: `Finished(...)`.
+- Browser-use baseline: Phase 2 Smoke 4 / Phase 4 / Phase 5 each took
+  6–14 steps to identify the rectangle tool with screenshots embedded as
+  DOM-augmented prompts; Phase 9 needed a custom drag action because
+  browser-use's primitive set didn't include canvas drag.
+- **Comparison**: clear win for the custom client. Canvas-heavy task
+  with no useful DOM is exactly the regime the design hypothesized —
+  the model's native pixel grounding handled both glyph identification
+  and the canvas drag in one shot each. Step count dropped 2-4×, and
+  the drag is a built-in primitive rather than a bolt-on action.
+
+### Acceptance (per backlog S-1)
+- ✅ Working prototype: `scripts/custom_agent.py` + supporting modules
+  (~580 lines of agent code, ~200 lines of probe).
+- ✅ Side-by-side comparison entry with at least one task where the
+  results diverge: Excalidraw is a clear win for the custom client;
+  saucedemo is a clear divergence in failure mode (loop vs false
+  success) even though the user-visible outcome is "neither succeeds."
+- The S-1 hypothesis ("UI-Venus's native format unlocks capability that
+  browser-use's DOM-augmented prompts leave on the table on canvas /
+  nested-anchor pages") is **partially confirmed**: yes for canvas
+  (Excalidraw), no for nested-anchor headless (saucedemo) — that
+  failure is below the framework layer.
+
+### Implications
+- For canvas-heavy tasks, the custom client is the right tool. Step
+  count and code-size both drop sharply vs. browser-use.
+- For nested-anchor headless DOM traps (saucedemo cart-icon), neither
+  framework is enough — the failure is in `Input.dispatchMouseEvent`'s
+  interaction with `--headless=new`'s rendering of nested `<a>`
+  elements. Headed Chromium plus visual grounding may sidestep this;
+  worth a `saucedemo_headed` payload as a future probe.
+- Honesty prompting (the "report what blocked you rather than
+  pretending to succeed" line) was insufficient — the model still
+  emitted `Finished` on a failed cart click. A future improvement
+  could verify-then-finish: take a screenshot after `Finished`, ask
+  the model "does this match the task goal?" — but that's beyond S-1
+  scope.
+
+### Caveats
+- Both runs are n=1 on a hot llama.cpp server (Q6_K, 32K context, f16
+  KV). Replication on different runs / different sites would harden
+  the conclusions. Excalidraw in particular benefits from a clean,
+  static page; sites with popups, A/B tests, or shadow-DOM may behave
+  differently.
+- Run artifacts preserved at `/tmp/custom_agent_*_saucedemo*` and
+  `/tmp/custom_agent_*_excalidraw*` — they will be cleared next reboot
+  (tmpfs).
+
+---
+
 ## Open questions for retro
-1. Are we leaving UI-Venus's grounding capability on the table by using
-   browser-use? Worth a custom client for canvas-heavy use cases?
+1. ~~Are we leaving UI-Venus's grounding capability on the table by using
+   browser-use? Worth a custom client for canvas-heavy use cases?~~
+   **Answered in Phase 11**: yes for canvas (Excalidraw 3 steps / 24s
+   vs browser-use's multi-step F-1+F-2 setup). No for nested-anchor
+   headless DOM traps (saucedemo cart-icon failed both ways). Use the
+   custom client for canvas / shadow-DOM / heavy-visual UIs; stick with
+   browser-use for richly-DOM'd pages.
 2. ~~Recovery prompt: would `extend_system_message` with "if action didn't
    change page, try X, Y, Z" fix the loop-on-failed-click pattern?~~
    **Answered in Phase 6**: partial yes for stuck-planning loops, no for

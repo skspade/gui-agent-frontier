@@ -25,59 +25,6 @@ be done without reading the whole doc.
 
 ---
 
-## S-1 — Custom CDP client prototype
-**Effort: l · Priority: S**
-
-(F-2 done — remappers are in `scripts/coord_remap.py`. The merged 8B
-model emits **0–1000 normalized** coordinates for grounding prompts; use
-`grounding_remap(raw, css_viewport_size)` for that path. `navigation_remap`
-is for the `<think>/<action>/<conclusion>` chat-template mode if/when this
-prototype needs multi-step reasoning. See findings Phase 10.)
-
-The Phase-2 findings show browser-use's DOM-indexed protocol leaves
-UI-Venus's visual training mostly unused. A 200–300 line custom client
-that does `screenshot → model → parsed action → CDP dispatch` — using
-the model's *native* `<think>/<action>/<conclusion>` format — could
-substantially outperform browser-use on canvas / shadow-DOM /
-anti-bot-fingerprint sites.
-
-### Steps
-1. Read the UI-Venus model card for the exact prompt template and
-   action grammar (`<click>x,y</click>`, `<type>text</type>`, etc.).
-2. Use `cdp-use` directly (already installed; browser-use uses it).
-   Skeleton:
-   ```python
-   from cdp_use import CDPSession  # or whatever the actual API is
-   async def step(session, screenshot_b64, task_so_far):
-       resp = await call_llama_server(screenshot_b64, task_so_far)
-       action = parse_native_action(resp)  # <click>...</click> etc.
-       if action.kind == "click":
-           x, y = remap_coord(action.xy, model_size, viewport)
-           await send.Input.dispatchMouseEvent(...)
-       elif action.kind == "type": ...
-       elif action.kind == "done": return resp
-   ```
-3. Pick one test case from findings where browser-use struggled —
-   probably the headless saucedemo cart-icon click — and prove the
-   custom client handles it.
-4. Compare: same task, same model server, browser-use vs custom. Steps,
-   wall-clock time, success/failure.
-
-### Acceptance
-- Working prototype in `scripts/custom_client/` (or a separate Python
-  module).
-- A side-by-side comparison entry in `docs/findings.md` Phase 4 with at
-  least one task where the custom client succeeds and browser-use fails
-  (or vice versa — negative result is also a valid outcome).
-
-### Why the "vice versa" matters
-If browser-use's DOM-augmented prompts beat the model's native format
-even on visual tasks, that's a *strong* signal that we should keep
-using browser-use and just prompt-engineer harder. Don't default to
-"custom is better."
-
----
-
 ## S-2 — Reverse proxy + auth (only if needed)
 **Effort: m · Priority: S · Trigger: only when exposing beyond `192.168.0.0/24`**
 
