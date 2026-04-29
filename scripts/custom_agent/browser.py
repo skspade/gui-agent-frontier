@@ -20,7 +20,12 @@ DISPLAY_ENV = {
 }
 
 
-def launch_chromium(*, headless: bool, port: int = 9222) -> tuple[subprocess.Popen, str, str]:
+def launch_chromium(
+    *,
+    headless: bool,
+    port: int = 9222,
+    window_size: tuple[int, int] = (1280, 800),
+) -> tuple[subprocess.Popen, str, str]:
     """Spawn chromium with --remote-debugging-port. Returns (process, ws_url, user_data_dir).
 
     Caller must terminate the process and rmtree the user_data_dir.
@@ -30,6 +35,7 @@ def launch_chromium(*, headless: bool, port: int = 9222) -> tuple[subprocess.Pop
         CHROME_BIN,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={user_data_dir}",
+        f"--window-size={window_size[0]},{window_size[1]}",
         "--disable-blink-features=AutomationControlled",
         "--no-first-run",
         "--no-default-browser-check",
