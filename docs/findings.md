@@ -825,6 +825,315 @@ the modes diverge. Run cost is +1 LLM call per click step (~2s).
 
 ---
 
+## 2026-04-29 — Phase 12: MAI-UI-8B (Tongyi-MAI) A/B against UI-Venus-1.5-8B
+
+**Goal**: try MAI-UI-8B as a candidate replacement default. Same Qwen3-VL
+base architecture, claims #1 in 8B class on the ScreenSpot-Pro
+leaderboard (65.7% vs UI-Venus 1.5's reported 68.4%; close enough that
+real-world smokes will be more informative than benchmark numbers).
+Design doc: `docs/plans/2026-04-29-mai-ui-8b-evaluation-design.md`.
+
+### Setup
+- Pulled `mradermacher/MAI-UI-8B-GGUF` Q6_K (6.7G) + mmproj-f16 (1.16G)
+  into `~/models/mai-ui-8b/`. Renamed on disk to match Venus convention
+  (`mai-ui-8b-Q6_K.gguf`, `mmproj-mai-ui-8b-f16.gguf`).
+- **Renamed `ui-venus.service` → `vision-model.service`**. The unit is no
+  longer model-specific; it just runs whatever the swap script points it
+  at.
+- **New `scripts/swap_model.sh <model> [quant]`**: hardcoded two-model
+  registry (`ui-venus-1.5-8b`, `mai-ui-8b`). Rewrites the unit's gguf
+  paths, mmproj, alias, and Description, then restart + `/health` poll.
+- `scripts/swap_quant.sh` reduced to a one-line delegator that forwards
+  to `swap_model.sh ui-venus-1.5-8b "$@"` (preserves muscle memory).
+- `MODEL` constant in `scripts/smoke_browser_use.py` is now env-driven:
+  `MODEL=mai-ui-8b .venv/bin/python -u scripts/smoke_browser_use.py …`.
+
+### Smoke A: `excalidraw_drag` (custom drag action) — PASS
+- 5 steps, clean run, real Excalidraw rectangle drawn on canvas with
+  selection handles in `/tmp/smoke_mai_drag_final.png`. Right-side
+  properties panel (Stroke / Background / …) confirms it's a real
+  element, not an artifact.
+- Compared to Phase 9 baseline (UI-Venus Q6_K): Venus did this in 4
+  steps, MAI-UI in 5. Functionally equivalent.
+- The agent took the literal coordinates from the prompt and called the
+  registered `drag(x1, y1, x2, y2)` action correctly on first attempt —
+  same as Venus.
+- One quirk: the model also emitted a spurious `save_as_pdf` action in
+  parallel with the `drag`, which browser-use accepted but discarded.
+  Doesn't affect outcome.
+
+### Smoke B: `excalidraw_toolbar` (icon enumeration + active-state) — partial fail
+First run at `max_completion_tokens=2048` (Venus-tuned default in
+`smoke_browser_use.py`) flagged a Venus-tuned bias: MAI-UI's `thinking`
+blocks routinely cross ~8000 chars and got truncated mid-string at that
+cap. Re-ran with `MAX_TOKENS=8192` (now env-driven) for a fair A/B.
+
+| Metric | UI-Venus Q6_K (Phase 3) | UI-Venus Q5_K_M (Phase 5) | MAI-UI @ 2048 | **MAI-UI @ 8192** |
+|---|---|---|---|---|
+| Tools identified | 12 (caught Hand) | 11 | 12 (Hand + "more tools") | **11 (lost "more tools")** |
+| Active-state color | "purple" (correct) | "orange" (wrong) | "orange" (wrong) | **"orange" (wrong — actual is purple)** |
+| Steps to terminate | clean run | 30+ step send_keys loop | 20 steps + 6 loop nudges | **16 steps + 6 loop nudges** |
+| Active-tool claim | matched screenshot | confabulated | confabulated | **confabulated (claimed Rectangle active; screenshot shows Selection)** |
+| JSON parse failures | none | none | 8 mid-response truncations | **0 (cap was the cause)** |
+| Per-step latency | normal | normal | normal | **75s LLM-call timeouts (longer thinking = slower)** |
+
+Bumping the cap fixed exactly the artifact you'd expect (JSON truncations
+went to zero) and shaved 4 steps. Everything else held: the loop pattern
+fired the same number of times, the active-state confabulation persisted,
+and the icon count actually *dropped* by one (lost "more tools"). Net
+new failure: LLM-call timeouts at 75s on the longer responses.
+
+The verification screenshot (`/tmp/smoke_mai_toolbar_8k_final.png`) shows
+the selection arrow tool with the purple active-border, *not* the
+rectangle — exactly the failure mode that catches every model that
+doesn't ground on the screenshot at the final step. Same as Phase 5's
+Q5_K_M run.
+
+### Other observations
+- **Verbosity is intrinsic, not a tunable**: MAI-UI's `thinking` blocks
+  routinely cross ~8000 characters even when nothing forces it. The
+  Venus-tuned `max_completion_tokens=2048` was unfairly truncating those
+  responses; `smoke_browser_use.py` now reads `MAX_TOKENS` from env
+  (default 2048). Even with 8192 headroom, MAI-UI's responses are slow
+  enough to trip the 75-second LLM-call timeout on multi-step tasks.
+- **Context overflow on judge trace**: end-of-run judge trace request
+  hit 43–44K tokens against the 32K context limit and errored on both
+  runs. Cosmetic (final result was already produced) but worth noting
+  if we tighten the per-task context budget.
+- **Server stand-up was clean**: same llama.cpp build, same Vulkan path,
+  same `--image-min-tokens 1024 --jinja --flash-attn on -c 32768 -ngl 99`
+  flags as Venus. No mtmd / chat-template surprises. Confirms the
+  Qwen3-VL family is well-supported by the existing toolchain.
+
+### Verdict
+**Do not promote MAI-UI-8B to default.** On the two smokes we have, with
+the token-cap bias removed:
+- Drag (mechanical action plumbing) is a tie — both models execute it
+  fine in 4–5 steps.
+- Toolbar (visual grounding + active-state introspection) is a regression
+  — MAI-UI behaves like Venus Q5_K_M, with the same "looped re-click then
+  confabulate active state" failure that Q5_K_M exhibited on the same
+  task. Bumping `max_completion_tokens` from 2048 → 8192 cleared the
+  JSON-truncation artifact (8 → 0 errors) but did not change the loop
+  count or the final confabulation, which are the model-intrinsic signals.
+
+The leaderboard claim (MAI-UI 65.7% vs Venus 68.4% on ScreenSpot-Pro) is
+consistent with what we see — MAI-UI is in the same ballpark on point
+grounding but loses on the holistic "describe the scene accurately"
+task that the toolbar smoke probes. Keep UI-Venus-1.5-8B as the default;
+MAI-UI weights stay on disk for any future re-test (e.g. if a new
+release fixes the verbosity / final-step-grounding pattern).
+
+### Operator-facing changes (active going forward)
+- Service is now `vision-model.service` (not `ui-venus.service`).
+- Active-model swap: `sudo bash scripts/swap_model.sh <model> [quant]`.
+  Default quant is `Q6_K`. To return to Venus default after this phase:
+  `sudo bash scripts/swap_model.sh ui-venus-1.5-8b`.
+- Existing `swap_quant.sh ARG` invocations still work — they delegate
+  to the above with `ui-venus-1.5-8b` as the model.
+
+### Caveats
+- n=2 smokes per model (toolbar run twice with different token caps).
+  Toolbar confabulation could be run-to-run variance, but it persisted
+  across two MAI-UI runs *and* Phase 5's Q5_K_M run on the same task,
+  so the pattern is at least 3-of-3 repeatable in this failure mode.
+- We did not exercise navigation benchmarks (AndroidWorld-style
+  multi-step web tasks). MAI-UI's reported 76.7% on AndroidWorld
+  (235B variant) doesn't generalize down to 8B without measurement.
+- Sanity-check on harness fairness: confirmed via grep that
+  `smoke_browser_use.py` and `drag_action.py` carry no Venus-specific
+  output parsing or coordinate remapping (Venus's
+  `<think>…</think><answer>click(point=…)</answer>` parser and
+  `coord_remap.py` live in the separate `scripts/custom_agent/` path,
+  not exercised here). Other Venus-tuned default that *was* in the path:
+  `max_completion_tokens=2048` — corrected via the second run.
+
+---
+
+## 2026-04-29 — Phase 13: 5-stack MoE bake-off (UI-Venus 30B-A3B vs Holo2 vs bu-30b vs split)
+
+**Goal**: pick the most reliable local stack for browser-use shopping
+flows. Five candidates:
+
+- **S1**: UI-Venus-1.5-8B Q6_K (current default baseline)
+- **S2**: UI-Venus-1.5-30B-A3B Q3_K_M
+- **S3**: Holo2-30B-A3B Q3_K_M
+- **S4**: bu-30b-a3b-preview Q3_K_M (Browser Use's own Qwen3-VL fine-tune)
+- **S5**: Split design (Holo2 planner + Holo1.5-7B grounder, separate harness)
+
+Design doc: `docs/plans/2026-04-29-moe-stack-comparison-design.md`.
+Plan: `docs/plans/2026-04-29-moe-stack-comparison-plan.md`.
+
+### Setup
+- All four new model GGUFs pulled pre-built from HuggingFace (no
+  conversion). Sources:
+  - `mradermacher/UI-Venus-1.5-30B-A3B-GGUF` — Q3_K_M + mmproj-f16
+  - `mradermacher/Holo2-30B-A3B-GGUF` — Q3_K_M + mmproj-f16
+  - `bartowski/browser-use_bu-30b-a3b-preview-GGUF` — Q3_K_M + mmproj-f16
+  - `mradermacher/Holo1.5-7B-GGUF` — Q6_K + mmproj-f16
+- Models live on `/mnt/data/models/` (nvme1n1, 578 GB free). Existing
+  8B models stay at `~/models/`.
+- `swap_model.sh` extended with per-entry `MODEL_DIR` so it serves from
+  either drive.
+- All 30B-A3B candidates loaded cleanly at full 32K ctx with `--flash-attn on`
+  and `--image-min-tokens 1024`. VRAM at idle: 97-99% (~16 GB) for the
+  three 30B-A3Bs at Q3_K_M; 69% for Holo1.5-7B at Q6_K. **Q3_K_M fits
+  but with <300 MB headroom** — design-doc fallback (-c 16384 + Q8 KV)
+  was not needed.
+- Passwordless sudoers entry for `swap_model.sh` (narrow scope, in
+  `/etc/sudoers.d/vision-model-swap`) so the harness can swap models
+  without an interactive password.
+- New long-horizon smoke `scripts/smokes/saucedemo_full_checkout.py`:
+  9-checkpoint flow (login → sort by Price L→H → add 3rd cheapest →
+  add Backpack → cart → remove → checkout form → verify subtotal →
+  Finish → thank-you page).
+
+### Per-stack results (n=1 short smokes, n=3 long-horizon)
+
+**Self-reported and screenshot-verified medians differed substantially.**
+The screenshot is ground truth per CLAUDE.md; the model's prose was
+inflated for several runs. Both numbers are reported.
+
+| stack       | drag | toolbar  | saucedemo_headed | full_checkout claimed | full_checkout verified | **score** |
+|-------------|------|----------|------------------|-----------------------|------------------------|-----------|
+| S1 (8B Q6)  | pass (4 steps) | partial (40, looped) | partial (login+add) | 3/9 | **1/9** | 2.33 |
+| S2 (UV30 Q3, no patch) | pass (6) | partial (25, clean) | **fail** (trailing-space login) | 0/9 | **0/9** | 1.50 |
+| S2 (UV30 Q3, w/ patch) | (same) | (same) | partial (login ok; add loop) | 8/9 | **2/9** | 2.67 |
+| S3 (Holo2 Q3) | pass (4) | partial (3, **clean**) | partial (login+add; menu overlay) | 5/9 | **2/9** (verified runs) | 2.67 |
+| S4 (bu-30b Q3) | **fail** (wrong drag params) | partial (6) | fail (input persistence) | 4/9 | **0/9** | 0.50 |
+
+`drag/toolbar/saucedemo_headed`: pass=1.0 partial=0.5 fail=0.0
+`full_checkout`: median checkpoints / 9
+`score = 3*(verified long-horizon) + drag + toolbar + saucedemo_headed`
+
+S5 (split design) was **scoped out** — the hypothesis (small grounder
+fixes coord precision) doesn't apply to Holo2, whose grounding head is
+already strong. The actual long-horizon failure was add-to-cart
+flakiness, not coord precision; a different grounder wouldn't help.
+
+### Findings (in order of importance)
+
+1. **Trailing-space artifact in UI-Venus 30B-A3B Q3_K_M**. The model emits
+   text fields with a stray trailing space (`"standard_user "`,
+   `"secret_sauce "`), which breaks any site that exact-matches user
+   input. Three runs of saucedemo_headed and three runs of long-horizon
+   all failed at login until we added a generic harness whitespace
+   trim. **Not observed in S1 (8B Q6), S3 (Holo2 30B Q3), or S4 (bu-30b
+   30B Q3)** — it's UI-Venus-30B-specific, not a Q3-systemic artifact.
+   Patch lives in `scripts/harness_patches.py` (re-registered
+   `Registry.execute_action` strips whitespace from `input.text` dict
+   before pydantic constructs the action; pydantic's `model_validate`
+   classmethod is bypassed by direct `**kwargs` construction at
+   `tools/registry/service.py:349`, so that hook didn't work).
+
+2. **Agent self-reports are systematically inflated.** Model claimed
+   medians (3-8) consistently outran screenshot-verified medians (0-2).
+   S2-with-patch claimed all three runs reached checkpoint 7-8
+   ("verified item total = $29.99") but every screenshot showed the
+   products page with an empty cart icon (checkpoint 2). S4 run 3
+   claimed "Added both items to cart" but screenshot showed the login
+   page with `"Epic sadface: You can only access /inventory.html when
+   you are logged in"` — the agent navigated directly to the URL
+   without authenticating. **Lesson reaffirmed (already in CLAUDE.md):
+   trust screenshots, not prose.** The structured `✓ / ✗` self-report
+   pattern is no more reliable than free-form claims.
+
+3. **None of the local Q3-Q6 models in browser-use can complete a real
+   shopping checkout.** All five stacks fail at saucedemo's "Add to
+   cart" button on the long-horizon task. The pattern is consistent
+   across stacks: the model thinks it added items, browser-use's
+   element-index updates after the page repaints, the next step's
+   `click(index=N)` references a now-stale index, the model loops on
+   "element not available" until step budget exhausts. This is a
+   *harness-level* problem (browser-use's index churn), not a
+   model-quality problem. Holo2's strong grounding doesn't fix it; the
+   bu-30b model trained specifically against browser-use doesn't fix
+   it either.
+
+4. **Holo2 wins on toolbar grounding by a wide margin.** 3 steps to
+   terminate cleanly vs S1's 40-step loop, S2's 25 steps, S4's 6 steps.
+   This is a real durable signal that Holo2's localization is
+   meaningfully better when the task isn't bottlenecked by harness
+   element-index issues.
+
+5. **bu-30b's instruction-following is weaker than its peers.**
+   - Emitted `start_x/start_y/end_x/end_y` for the `drag` action despite
+     the task explicitly documenting `x1/y1/x2/y2`. Pydantic rejected;
+     the run failed.
+   - Tried navigating directly to `/inventory.html` instead of typing
+     credentials when login appeared difficult.
+   - Documented sampling params (temp=0.6, top_p=0.95,
+     `dont_force_structured_output=True`) per the bu-30b HF README.
+     `ChatBrowserUse` is **cloud-only** (talks a proprietary
+     `{'completion':...}` endpoint, not OpenAI); local serve uses
+     `ChatOpenAI` per the same README. Our initial S4 runner with
+     `ChatBrowserUse` crashed; rewrote to use `ChatOpenAI`.
+
+6. **S1 (8B Q6) baseline is more competitive than expected once
+   verified.** Verified median = 1/9 (only login). The earlier-claimed
+   3/9 was self-report inflation. So the actual gap from S1 to the
+   30B-A3B candidates is small (S1 = 2.33, S3 = 2.67) — well within
+   "the harness is the bottleneck" territory.
+
+### Verdict
+
+**No promotion.** UI-Venus-1.5-8B Q6_K stays as the default. None of
+the four candidates clears the rubric meaningfully:
+
+- **S2 (UV30 Q3)** matches S3 (Holo2) on score, but only after a harness
+  patch unique to fixing its quirk. The model itself is no better at
+  the long-horizon task than the 8B baseline.
+- **S3 (Holo2)** has the best short-task grounding by a wide margin
+  (3-step toolbar) but no long-horizon advantage. Worth keeping
+  on disk as a reference for grounding-precision tests.
+- **S4 (bu-30b)** lost across the board. Its training-for-browser-use
+  positioning didn't translate to the local-served Q3 setup. Worth
+  retrying at higher quant or via the cloud API before final dismissal.
+- **S5 (split)** scoped out. Hypothesis didn't survive the bake-off:
+  the actual blocker is harness-level, not coord-precision.
+
+### Caveats
+
+- **n=3 long-horizon at temp=0.0 (S1/S2/S3) and temp=0.6 (S4)**.
+  Variance was small in practice — runs failed at the same step in the
+  same way for each stack.
+- **Q4_K_M not tested.** The design doc named Q4 as a fallback if Q3
+  showed quality issues. We did see Q3-specific issues (trailing space)
+  on one model, but the failure mode was harness-fixable. Whether Q4
+  improves long-horizon is open.
+- **Screenshot capture race.** Two of S3's three long-horizon runs
+  produced blank screenshots at end-of-run. The capture happens after
+  `agent.run()` returns; if the browser is mid-navigation,
+  `Page.captureScreenshot` returns blank. Worth either retrying the
+  capture, or capturing periodically during the run, in a future
+  iteration.
+- **Self-report inflation needs a tooling fix.** Adding a structured
+  per-checkpoint validator (e.g. URL pattern + DOM probe per
+  checkpoint) would convert "we have to manually verify every run" to
+  "the run reports its true checkpoint." Backlog candidate.
+
+### Operator-facing changes (active going forward)
+
+- **`scripts/harness_patches.py` is now imported by both smoke runners**
+  (`smoke_browser_use.py` and `smoke_browser_use_bu.py`). Trims
+  whitespace on `input.text` before action construction. Generic
+  defensive engineering — no model is harmed by it.
+- **New smoke**: `scripts/smokes/saucedemo_full_checkout.py` (9-checkpoint
+  long-horizon shopping flow). Use with `MAX_TOKENS=8192`.
+- **New smoke runner**: `scripts/smoke_browser_use_bu.py` for bu-30b
+  (uses `ChatOpenAI` per the bu HF README, NOT `ChatBrowserUse` which
+  is cloud-only). Documented sampling params: temp=0.6, top_p=0.95,
+  `dont_force_structured_output=True`.
+- **`swap_model.sh` registry now includes** `ui-venus-1.5-30b-a3b`,
+  `holo2-30b-a3b`, `bu-30b-a3b-preview`, `holo1.5-7b` (all on
+  `/mnt/data/models/`). Default quant per entry is the one that's
+  actually on disk (Q3_K_M for the 30B-A3Bs, Q6_K for Holo1.5-7B).
+- **Passwordless sudoers entry** at `/etc/sudoers.d/vision-model-swap`,
+  scope: `bash scripts/swap_model.sh *` for user `seans` only.
+  Required for autonomous swap-during-run flows.
+
+---
+
 ## Open questions for retro
 1. ~~Are we leaving UI-Venus's grounding capability on the table by using
    browser-use? Worth a custom client for canvas-heavy use cases?~~
