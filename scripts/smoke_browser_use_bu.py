@@ -1,11 +1,16 @@
 """
-Smoke runner variant that uses browser-use's native ChatBrowserUse adapter
-against bu-30b-a3b-preview served by llama.cpp. Mirrors smoke_browser_use.py
-otherwise. See docs/plans/2026-04-29-moe-stack-comparison-design.md (S4).
+S4 smoke runner for bu-30b-a3b-preview served by llama.cpp.
 
-Run:
-    cd /home/seans/Source/vision-model
-    .venv/bin/python scripts/smoke_browser_use_bu.py [<smoke_name>]
+Per the bu-30b HF README, the local-serve recipe uses ChatOpenAI (NOT
+ChatBrowserUse, which is cloud-only) with bu-specific sampling params:
+  - temperature=0.6, top_p=0.95
+  - dont_force_structured_output=True (disable grammar; bu-30b emits its
+    own JSON natively)
+  - model="browser-use/bu-30b-a3b-preview" (pattern; llama.cpp ignores
+    the model field when only one model is loaded)
+
+See docs/plans/2026-04-29-moe-stack-comparison-design.md (S4) and the
+upstream README at huggingface.co/browser-use/bu-30b-a3b-preview.
 """
 import asyncio
 import importlib
@@ -15,11 +20,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drag_action import register_drag  # noqa: E402
 
-from browser_use import Agent, Browser, ChatBrowserUse, Tools  # noqa: E402
+from browser_use import Agent, Browser, ChatOpenAI, Tools  # noqa: E402
 
 CHROME_PATH = "/home/seans/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome"
 SERVER_URL = "http://localhost:8080/v1"
-MODEL = os.environ.get("MODEL", "bu-30b-a3b-preview")
+MODEL = "browser-use/bu-30b-a3b-preview"
 DEFAULT_SMOKE = "excalidraw_toolbar"
 
 
@@ -29,13 +34,16 @@ def load_smoke(name: str):
 
 async def main(smoke_name: str) -> None:
     smoke = load_smoke(smoke_name)
-    print(f"===== SMOKE (S4 native): {smoke_name} =====")
+    print(f"===== SMOKE (S4 bu-30b): {smoke_name} =====")
 
-    llm = ChatBrowserUse(
+    llm = ChatOpenAI(
         model=MODEL,
         base_url=SERVER_URL,
         api_key="not-needed",
-        temperature=0.0,
+        temperature=0.6,
+        top_p=0.95,
+        max_completion_tokens=int(os.environ.get("MAX_TOKENS", "8192")),
+        dont_force_structured_output=True,
     )
 
     browser = Browser(
