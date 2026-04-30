@@ -2357,3 +2357,299 @@ against MAI-UI is the gate to changing the default.
    required.
 5. Context budget: 32K worked for a 22-step run. What's the ceiling before
    we need KV quantization (`--cache-type-k q8_0`) to keep VRAM in budget?
+
+---
+
+## 2026-04-30 — Phase 17: E-7 MAI-UI-8B promotion gate (Excalidraw re-run on clean dispatcher)
+
+**Goal**: Phase 16 named MAI-UI-8B the new strict-score leader on
+saucedemo_full_checkout (6/9 vs UI-Venus 8B's 4/9), but Phase 12 had
+rejected MAI-UI based on a regression on the Excalidraw toolbar smoke.
+Phase 12 ran on the pre-tooling-audit dispatcher; before promoting
+MAI-UI to default, re-run the Phase 12 smokes on the current (post-
+Phase 14) dispatcher and decide. Backlog item E-7.
+
+### Setup
+- Server swapped to `mai-ui-8b` Q6_K via `swap_model.sh`.
+- Same `MAX_TOKENS=8192` as Phase 12's fair-A/B run (MAI-UI's thinking
+  blocks routinely cross 8000 chars).
+- Smokes unchanged from Phase 12: `scripts/smokes/excalidraw_drag.py`
+  and `scripts/smokes/excalidraw_toolbar.py`.
+
+### Smoke A: `excalidraw_drag` — PASS (improved)
+
+| Metric | Phase 12 MAI-UI | **Phase 17 MAI-UI** |
+|---|---|---|
+| Steps to terminate | 5 | **3** |
+| Real Excalidraw element drawn | yes | **yes** |
+| Spurious parallel actions | `save_as_pdf` ghost | **none** |
+| Verification screenshot | `/tmp/smoke_mai_drag_final.png` | `/tmp/smoke_e7_drag_final.png` |
+
+Real rectangle on canvas with selection handles + properties panel.
+Beats Phase 9 Venus Q6_K baseline (4 steps) by one step. Mechanical
+action plumbing remains a tie-or-better; nothing here blocks
+promotion.
+
+### Smoke B: `excalidraw_toolbar` — partial fail (mixed delta)
+
+| Metric | Phase 12 MAI-UI @ 8192 | **Phase 17 MAI-UI** | Phase 12 Venus Q6_K (Phase 3) |
+|---|---|---|---|
+| Tools identified | 11 (lost "more tools") | **12 (caught Lock + More tools, missed Selection arrow)** | 12 (caught Hand) |
+| Active-state claim vs screenshot | confabulated (claimed Rectangle; screenshot showed Selection) | **matched (rectangle IS active in screenshot)** | matched |
+| Steps to terminate | 16 + 6 loop nudges | **30 + 10 loop nudges (hit step-budget warning)** | clean run |
+| Stuck-loop pattern | yes (cart-icon-style) | **yes — 22+ redundant clicks on already-active rectangle tool** | none |
+| LLM 75s timeouts | yes | **yes** | none |
+| Final wrap-up trigger | step budget / loop detection | **step budget / loop detection** | task-complete |
+| Verification screenshot | `/tmp/smoke_mai_toolbar_8k_final.png` | `/tmp/smoke_e7_toolbar_final.png` | n/a |
+
+### Findings (in order of importance)
+
+1. **The active-state confabulation that drove the Phase 12 rejection
+   is fixed.** Phase 12 verification screenshot showed Selection arrow
+   active while the model claimed Rectangle. Phase 17 verification
+   screenshot shows Rectangle active and the model claims Rectangle —
+   the visual-grounding-on-final-step pathology is gone. Worth
+   recording even if the smoke still doesn't pass cleanly.
+
+2. **The "loop on redundant click" pathology got worse, not better.**
+   Phase 12: 16 steps + 6 loop nudges before wrap-up. Phase 17: 30
+   steps + 10 loop nudges, hit the step-budget warning at 30, and
+   only terminated because loop detection forced a `done` call. The
+   model recognized by step ~25 that the rectangle tool was already
+   highlighted (memory line: "previous clicks were unnecessary"), but
+   kept re-clicking it for 5 more steps anyway — a "verify-by-
+   clicking" loop where the prompt's "confirm visually" step never
+   resolves.
+
+3. **Icon-enumeration completeness traded one miss for another.**
+   Phase 12 caught Hand but missed More tools; Phase 17 caught Lock
+   and More tools but missed the Selection arrow tool (visible at
+   subscript "1" in the verification screenshot, the icon
+   immediately to the right of Hand). Net: 12 of 13 visible icons
+   either way, with the missed icon shifting. Not a clean
+   improvement on icon enumeration.
+
+4. **Dispatcher fix did not affect this smoke.** Phase 14's silent-
+   CDP-drop fallback was for `Input.dispatchKeyEvent` on saucedemo's
+   cart icon. The toolbar smoke clicks via DOM-indexed elements (the
+   registered `click(index=...)` action), which never went through
+   the broken CDP path. The Phase-12-vs-Phase-17 delta is therefore
+   model-side variance / prompt-position sensitivity, not a harness
+   improvement.
+
+5. **The judge-trace context overflow persists** (43,835 tokens
+   against 32,768 ctx). Cosmetic — final result was already produced
+   — but it's the same artifact Phase 12 noted. Tightening the per-
+   task context budget or skipping the judge trace for long MAI-UI
+   runs would clean this up.
+
+### Verdict
+
+**Default stays UI-Venus-1.5-8B Q6_K.** Per E-7 acceptance:
+
+- **Drag**: MAI-UI exceeds Venus (3 vs 4 steps). Promotion-positive.
+- **Toolbar**: NOT a clean tie-or-exceed. Phase 12's confabulation is
+  fixed, but the loop-on-redundant-click pathology regressed (30 vs
+  16 steps). Venus's Phase 3 baseline on this smoke was a clean run
+  with matching active-state and 12 icons; MAI-UI on the current
+  dispatcher reaches a comparable end state but only by tripping
+  loop-detection wrap-up, not by recognizing task completion.
+  Promotion-blocking.
+
+MAI-UI becomes a **per-task model choice**, consistent with Phase 16's
+recommendation: best for long-horizon planning-heavy flows
+(saucedemo); worse for grounding-introspection / "stop when verified"
+flows (Excalidraw toolbar). Operators who care about a specific task
+can override `MODEL=mai-ui-8b` per-smoke. Default remains UI-Venus 8B
+for mixed workloads.
+
+### Operator-facing changes
+- Service swapped back to `ui-venus-1.5-8b` Q6_K after the evaluation.
+  No changes to active-registry models or harness.
+- E-7 removed from `docs/backlog.md`.
+
+### Caveats
+- n=1 per smoke. Drag is mechanical and reproduces; toolbar's loop-
+  count and wrap-up trigger are run-to-run noisy. The active-state-
+  claim improvement (key finding) needs n≥2 to be confidence-worthy.
+- We did not re-baseline Venus on the current dispatcher. The
+  Excalidraw smokes don't exercise the Phase 14 silent-drop bug, so
+  Venus's Phase 3 baseline is still the relevant comparison; but if a
+  future bake-off includes Excalidraw, Venus should be re-run too.
+- The "verify-by-clicking" loop is prompt-sensitive. The toolbar
+  smoke explicitly asks "(4) confirm visually in the next screenshot
+  that the rectangle tool is now highlighted as active" — MAI-UI
+  interpreted this as "click and re-verify" instead of "look and
+  report." A reworded prompt might score MAI-UI better; but
+  rewording moves the goalpost, so we keep Phase 12's prompt for
+  apples-to-apples.
+
+---
+
+## 2026-04-30 — Phase 18: Class D generalization probe (BILLY → Best Buy) and dispatcher fixes
+
+**Goal**: Confirm the IKEA-BILLY-style "search → PDP → add → verify"
+flow generalizes to a second retailer (Class D, novel real-world
+e-commerce), and characterize whatever fails along the way.
+
+### Setup
+- Active service: started on `ui-venus-1.5-30b-a3b` Q3_K_M (carryover
+  from Phase 16); ended back on `ui-venus-1.5-8b` Q6_K (the
+  documented default per Phase 17).
+- New task: `scripts/custom_agent_tasks/bestbuy_airpods.py` — sibling
+  of `ikea_billy.py`, search "AirPods" → click any AirPods card →
+  Add to Cart → open cart → verify cart contains AirPods.
+- Probe added to `_scroll`: per-step log of `pre_y/post_y/post_y2`,
+  `document.scrollingElement`, body+html overflow, and
+  `elementFromPoint(sx, sy)` so a scroll silent-failure can be
+  diagnosed in one run instead of two.
+
+### Run 1 — Best Buy v1 against 30B-A3B (FAIL, `stuck_loop` step 18, 76s)
+Search → PDP succeeded in 4 steps. Then 15 consecutive
+`scroll dir=down` actions, only 4 of which advanced. **Initial
+diagnosis (wrong)**: "page never visually scrolled." Three step
+screenshots compared (4, 9, 13) all showed the AirPods top fold; I
+read this as "scroll dispatch silently no-ops on Best Buy" and
+hypothesized H1 (body overflow:hidden + inner scroll container).
+
+### Run 2 — Best Buy v2 with probe (CONTRADICTS H1)
+The probe ran 4 scrolls before the model server hung at step 9
+(unrelated, see F-5):
+```
+[step 4] target=(0,254) d=(0,254) y: 0->254->254 docH=4846 bodyOf=visible/visible
+[step 5] target=(0,508) d=(0,254) y: 254->508->508 docH=5319
+[step 6] target=(0,615) d=(0,254) y: 508->762->762 docH=6177
+[step 7] target=(0,984) d=(0,254) y: 762->1016->1016 docH=6177
+```
+
+ScrollY incremented cleanly every step. Body and html overflow both
+`visible/visible`. CDP wheel succeeded on first try (no fallback
+warning). **H1 was wrong.** Rechecking the v1 screenshots more
+carefully: step 008.png (which I had not previously read) shows a
+"compare AirPods Pro vs AirPods Max" grid + AppleCare panel — the
+page *had* progressed past the original fold; I had compared three
+screenshots that all happened to be near the top fold and missed
+the actual progression.
+
+### Real failure modes (run 1 + run 2)
+
+1. **Scroll deltas too small.** Model emits scrolls with start/end
+   coords ~250px apart, so `dy = end_y - start_y ≈ ±250`. Best Buy
+   AirPods Pro 3 PDP has Add-to-Cart around scrollY ≈ 1500-2500;
+   reaching it at 250px/scroll burns 6-10 steps just for traversal.
+2. **Hidden IFRAMEs intercept clicks at non-obvious coords.** Run 1
+   step 8: model clicked at viewport (486, 331), visually over a
+   "Shop now" button, but `elementFromPoint` returned an IFRAME
+   element. The dispatcher's existing JS `.click()` fallback called
+   `IFRAME.click()` — which is a no-op (clicking the iframe wrapper
+   doesn't activate anything inside its document).
+
+### Fixes (committed in this phase)
+
+1. **`_MIN_SCROLL_DELTA = 600` clamp in `_scroll`.** Floors the
+   magnitude when the model's start/end span is small (typical 250px
+   → clamped to 600px). Direction sign preserved. Also raised the
+   no-coords default from 400 → 600 for consistency.
+2. **IFRAME-skip in `_js_click_fallback`.** `elementsFromPoint` now
+   filters out IFRAMEs at every stack layer; the click goes to the
+   first interactive non-iframe (or the topmost non-iframe if no
+   interactive element is in the stack). Logs `[skipped N iframe]`
+   when a layer was filtered out.
+3. **`MAX_STEPS = 30 → 60`** in the three Class D tasks
+   (`bestbuy_airpods`, `ikea_billy`, `ikea_search_add`). 30 was a
+   carryover from saucedemo where 9-12 steps suffice; D-class flows
+   with overlay-handling + scroll-traversal + cart-verification are
+   genuinely longer.
+
+### Run 3 — Best Buy v3 against 8B (PASS, `call_user`, step 11, 49.7s)
+
+Trajectory:
+```
+[step 0]  click search bar
+[step 1]  type "AirPods"
+[step 2]  press_enter
+[step 3]  click AirPods Pro 3 card → PDP
+[step 4]  scroll d=(0,600)  y: 0   -> 600    (clamp active)
+[step 5]  scroll d=(0,600)  y: 600 -> 1200
+[step 6]  scroll d=(0,600)  y: 1200-> 1800
+[step 7]  click (732, 166)  "Add to Cart"
+[step 8]  click (932, 64)   cart icon
+[step 9]  scroll d=(0,600)  y: 0   -> 600    (cart page)
+[step 10] call_user "PASS"
+```
+
+**Independent verification** (`/tmp/custom_agent_final.png`):
+- Cart icon badge: **1** item
+- Order Summary Total: **$217.74** (≈ $199.99 + 9% tax, matches
+  AirPods Pro 3 retail)
+- "Customers often buy these together" rail shows three explicitly
+  AirPods-Pro-3-named silicone cases — Best Buy's recommender keys
+  off cart contents, strong indirect signal that AirPods Pro 3 is
+  the cart line item.
+
+3 scrolls reached scrollY=1800 (vs 4 scrolls reaching scrollY=1016
+without the clamp). The IFRAME-skip didn't trigger this run — CDP
+clicks landed cleanly — but is in place for future interception.
+
+### Run 4 — IKEA BILLY regression on 8B (FAIL, `stuck_loop` step 9, 34.5s) — pre-existing convention bug surfaced
+
+After Best Buy passed I re-ran BILLY on the same 8B build to confirm
+no regression. BILLY stuck-looped: model landed on the BILLY PDP at
+scrollY=0 and emitted five consecutive `Scroll(direction='up')` while
+its conclusion text said "Scroll down the page to bring the 'Add to
+bag' button into view." All five scrolls were no-ops because the
+dispatcher's wheel-convention `dir=up → dy=-600` can't go above
+top.
+
+UI-Venus uses *swipe* convention (`up` = swipe up → see content
+below = colloquially "scroll down"). The dispatcher uses *desktop
+wheel* convention (`up` = scroll viewport up → see content above).
+Same word, opposite meaning. Pre-existing — not caused by this
+phase's changes — but every prior passing smoke either used
+start/end coords (where the sign of `dy = end_y - start_y` encodes
+direction unambiguously) or didn't need a directional scroll. BILLY
+is the first task that lands on a PDP at scrollY=0 and emits
+direction-keyword scrolls.
+
+Filed as **F-6** in `docs/backlog.md`. Not fixed in this phase
+(out of scope; deserves its own before/after run).
+
+### Operator-facing changes
+- `scripts/custom_agent/actions.py`: `_MIN_SCROLL_DELTA = 600` clamp;
+  `_scroll_layout_probe` (per-step JSON probe; ~1 extra
+  Runtime.evaluate per scroll); IFRAME-skip in `_js_click_fallback`.
+- `scripts/custom_agent_tasks/bestbuy_airpods.py`: new file.
+- `scripts/custom_agent_tasks/{bestbuy_airpods,ikea_billy,ikea_search_add}.py`:
+  `MAX_STEPS = 30 → 60`.
+- Service: ended on `ui-venus-1.5-8b` Q6_K (default).
+
+### Filled cells (`docs/thesis.md`)
+| Class | Harness | Model | Cell |
+|---|---|---|---|
+| D | (1,1,1,1) | UI-Venus 1.5 8B Q6_K | **PASS** (Best Buy AirPods, 11 steps, 49.7s) |
+| D | (1,1,1,1) | UI-Venus 1.5 8B Q6_K | **FAIL** (IKEA BILLY, stuck_loop step 9 — pending F-6) |
+| D | (1,1,1,1) | UI-Venus 1.5 30B-A3B Q3_K_M | **HANG** (Best Buy AirPods, dispatch wedge — pending F-5) |
+
+Generalization conclusion: the search-→-PDP-→-add-→-verify pattern
+*does* generalize off IKEA at the 8B model + scroll-clamp
+combination — but only when the model emits start/end coord
+scrolls, which Best Buy happened to elicit. BILLY's directional
+scrolls trip an unrelated convention bug. **One PASS + one
+characterized FAIL** is enough to call Class D non-empty in the
+frontier table; remaining cells are F-5 (hang fix for 30B-A3B) and
+F-6 (convention fix for direction keyword scrolls).
+
+### Caveats
+- n=1 per cell. The Best Buy PASS depended on the model finding
+  Add-to-Cart at scrollY≈1800 (matches the typical PDP layout but
+  could vary by experiment, A/B variant, or ad-load shifting layout).
+- The scroll-probe adds latency (~50ms per scroll for the extra
+  Runtime.evaluate). Cheap enough to leave on; remove or env-gate
+  if a future task is latency-sensitive.
+- Independent verification of "AirPods is in cart" is indirect (cart
+  badge=1, total matches, recommender shows AirPods cases). Direct
+  verification would require sign-in (Best Buy gates the cart line
+  items behind an account); not in scope for an unattended smoke.
+- 30B-A3B's hang is reproducible (2/2) and is filed separately — it
+  did not influence the harness fixes in this phase, but it does
+  block the 5×3 D-class bake-off (E-7).

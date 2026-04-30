@@ -111,3 +111,20 @@ class Page:
         )
         v = m["cssLayoutViewport"]
         return int(v["clientWidth"]), int(v["clientHeight"])
+
+    async def wait_for_load(self, *, timeout_ms: int = 5000, poll_ms: int = 100) -> bool:
+        # Phase 18: poll document.readyState until 'complete' or timeout.
+        # Without this, post-navigation screenshots can capture a half-rendered
+        # page; the model then sees an unchanged-looking screen and re-clicks,
+        # tripping the stuck-loop detector even though nav was in flight.
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            r = await self.client.send_raw(
+                "Runtime.evaluate",
+                {"expression": "document.readyState", "returnByValue": True},
+                session_id=self.session_id,
+            )
+            if r["result"].get("value") == "complete":
+                return True
+            await asyncio.sleep(poll_ms / 1000)
+        return False

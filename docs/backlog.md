@@ -155,6 +155,122 @@ in the next bake-off, this stays deferred.
 
 ---
 
+## F-5 — UI-Venus-1.5-30B-A3B dispatch-hang on Best Buy AirPods task
+**Effort: s · Priority: F · Status: open · Cell: `[class=D, model=UI-Venus 30B-A3B]`**
+
+Phase 18 (`docs/findings.md`, 2026-04-30): two consecutive `bestbuy_airpods`
+runs against UI-Venus-1.5-30B-A3B Q3_K_M wedged mid-run with no log
+progress and no further screenshots written. Hang point differed
+between runs (step 9 in run 1, step 4 in run 2) but the failure mode
+was identical: `[step N] <action> -> ...` printed, then nothing for
+49+ minutes; CDP `Runtime.evaluate` calls in `_scroll` /
+`_input_probe` apparently stuck waiting on the renderer. `llama.cpp`
+`/health` continued to report `{"status":"ok"}` throughout. Same
+task ran clean on UI-Venus-1.5-8B Q6_K (PASS in 11 steps, 49.7s),
+so the hang is not task-side.
+
+Hypotheses (ranked):
+1. **Renderer-side JS pause on Best Buy ad/tracking iframes blocks
+   `Runtime.evaluate`.** 30B-A3B is slower per turn (~30-60s/step on
+   the 32K-context path), giving the page longer to load heavy ad
+   bundles between turns. CDP evaluate is synchronous w.r.t. the
+   target's task queue; a long blocking script would stall it.
+2. **Context overflow at ~step 4-9.** Each screenshot adds ~17K
+   tokens of context. By step 4-9 the prompt may straddle 32K. If
+   llama.cpp's behavior under prompt-too-long is to silently stall
+   the request (rather than truncate or return an error), we'd see
+   exactly this — except the hang is in dispatch *after* model_step
+   returned, which weakens this hypothesis.
+3. **Headed-Chromium GPU-process fault under mesa/RADV.** Phase 16
+   hit unrelated headed-Chromium quirks; 30B-A3B's longer think
+   times keep the renderer alive long enough that crashes /
+   recoveries land mid-CDP-call.
+
+### Approach
+1. Add a Runtime.evaluate timeout in `scripts/custom_agent/browser.py`.
+   If a probe / scroll-y read takes >5s, cancel the CDP call and log
+   `[dispatcher] CDP evaluate hung after 5s — bailing`. Surfaces
+   which call hangs (probe? scrollY? mouseWheel?) without changing
+   harness semantics.
+2. Capture `Runtime.consoleAPICalled` events for the duration of a
+   30B-A3B Best Buy run; correlate hang timestamps with renderer
+   console output to confirm/refute hypothesis 1.
+3. If hypothesis 1 is confirmed: add `--blink-settings=...` or
+   network-level ad-blocking to the launch flags so heavy ad scripts
+   don't pause the renderer for the duration of a turn.
+
+### Acceptance
+- Cause confirmed (which CDP call hangs and why) with a reproduction
+  log.
+- 30B-A3B can complete `bestbuy_airpods` end-to-end OR a documented
+  workaround exists (ad-block flag, longer timeouts, model-side
+  config change).
+
+### Don't
+- Don't generalize to "30B-A3B is broken" — the hang is task-specific
+  (Best Buy) and dispatch-side, not a model regression. Other Class
+  D tasks may not exhibit this.
+- Don't fix by switching the default away from 8B — 8B is already the
+  default; this is about making 30B-A3B *also* viable for Class D, not
+  replacing 8B.
+
+---
+
+## F-6 — Scroll-direction convention mismatch: UI-Venus uses swipe, dispatcher uses wheel
+**Effort: xs · Priority: F · Status: open · Cell: `[class=D, H=(2,1,1,1)]`**
+
+Phase 18 (`docs/findings.md`, 2026-04-30): `ikea_billy` regression on
+UI-Venus-1.5-8B Q6_K stuck-looped after the model landed on the BILLY
+PDP at scrollY=0 and emitted five consecutive `Scroll(direction='up')`
+actions while *describing* "scroll down to bring 'Add to bag' into
+view" in its conclusion text. The dispatcher follows desktop wheel
+convention (`direction='up'` → CDP `mouseWheel` deltaY=-600 →
+viewport scrolls UP → can't go above top), so all five scrolls were
+no-ops; stuck-loop early-out fired at step 9.
+
+UI-Venus's training is mobile-grounding-heavy and uses *swipe*
+convention: `direction='up'` means "swipe up" → content moves up →
+user sees content below → colloquially "scroll down". Same word,
+opposite meaning.
+
+The mismatch was masked until now because every previously-passing
+smoke that needed scrolling either (a) used start/end coords (which
+encode direction as a delta sign and were correctly interpreted) or
+(b) didn't scroll at all (Excalidraw, search-result-only flows). BILLY
+is the first task to land on a PDP at scrollY=0 and need a
+no-coords directional scroll.
+
+### Approach (pick one)
+1. **Reverse the dispatcher's direction mapping.** Treat `up` as
+   "see content below" (dy=+step) and `down` as "see content above"
+   (dy=-step). Matches UI-Venus training; risk: breaks any future
+   model that uses desktop wheel convention. Likely safe — Holo3 and
+   MAI-UI both emit start/end coords, not direction keywords.
+2. **Add explicit convention to the prompt** in
+   `scripts/custom_agent/model.py:106` — change
+   `direction='down/up/right/left'` to
+   `direction='down/up' (down=see content below, up=see content above)`.
+   Lower-risk but trusts the model to follow the spec under context
+   pressure.
+3. **Both** for belt-and-suspenders.
+
+### Acceptance
+- `ikea_billy` reaches Add-to-bag and PASSes on UI-Venus-1.5-8B Q6_K.
+- `bestbuy_airpods` v3 trajectory unchanged (it used start/end coords,
+  so neither approach should regress it).
+- A short note added to `docs/findings.md` Phase 18 / F-6 record
+  showing the BILLY pass after the fix.
+
+### Don't
+- Don't conclude UI-Venus is "broken" — the convention mismatch is
+  symmetric, and either side could be called wrong. The dispatcher
+  is the right place to fix because we control exactly one harness
+  serving N models.
+- Don't fix this as part of an unrelated phase; it deserves its own
+  before/after log.
+
+---
+
 ## S-2 — Reverse proxy + auth (off-frontier; only if needed)
 **Effort: m · Priority: S · Trigger: only when exposing beyond `192.168.0.0/24`**
 

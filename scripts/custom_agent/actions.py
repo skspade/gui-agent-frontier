@@ -125,24 +125,36 @@ async def _js_click_fallback(page: Page, x: int, y: int) -> None:
     # the first interactive descendant — that matches user intent.
     # Also focus inputs/textareas/selects so the next _type_keys finds
     # an editable activeElement (Element.click alone doesn't focus those).
+    #
+    # Phase 18: skip IFRAMEs at every stack layer. Best Buy stacks invisible
+    # ad/analytics iframes over interactive areas; clicking the iframe element
+    # itself is a no-op (iframe content is a separate document and CDP click
+    # on the iframe wrapper doesn't activate it). Drop them from consideration
+    # so the click lands on the real button beneath.
     js = (
-        f"(()=>{{const els=document.elementsFromPoint({x},{y});"
-        "if(!els||!els.length)return null;"
+        f"(()=>{{const all=document.elementsFromPoint({x},{y})||[];"
+        "const els=all.filter(e=>e.tagName!=='IFRAME');"
+        "if(!els.length)return {dropped:'iframe-only',count:all.length};"
         "const actionable=els.find(e=>/^(INPUT|BUTTON|A|SELECT|TEXTAREA|LABEL)$/.test(e.tagName));"
         "const t=actionable||els[0];"
         "if((t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT')&&typeof t.focus==='function')t.focus();"
         "t.click();"
-        "return t.tagName+(t.id?'#'+t.id:'')+(t.getAttribute&&t.getAttribute('data-test')?'['+t.getAttribute('data-test')+']':'');})()"
+        "const skipped=all.length-els.length;"
+        "return {tag:t.tagName+(t.id?'#'+t.id:'')+(t.getAttribute&&t.getAttribute('data-test')?'['+t.getAttribute('data-test')+']':''),skipped:skipped};})()"
     )
     r = await page.client.send_raw(
         "Runtime.evaluate", {"expression": js, "returnByValue": True},
         session_id=page.session_id,
     )
     val = r["result"].get("value")
-    if val:
-        print(f"  [dispatcher] CDP click at ({x},{y}) silently dropped -> JS .click() on {val}", file=sys.stderr)
-    else:
-        print(f"  [dispatcher] CDP click at ({x},{y}) silently dropped AND elementFromPoint hit nothing actionable", file=sys.stderr)
+    if not val:
+        print(f"  [dispatcher] CDP click at ({x},{y}) silently dropped AND elementFromPoint hit nothing", file=sys.stderr)
+        return
+    if val.get("dropped") == "iframe-only":
+        print(f"  [dispatcher] CDP click at ({x},{y}) silently dropped AND only IFRAMEs at point (count={val.get('count')})", file=sys.stderr)
+        return
+    skip_note = f" [skipped {val['skipped']} iframe]" if val.get("skipped") else ""
+    print(f"  [dispatcher] CDP click at ({x},{y}) silently dropped -> JS .click() on {val.get('tag')}{skip_note}", file=sys.stderr)
 
 
 _OVERLAY_CLASS = "__custom_agent_select_overlay__"
@@ -389,6 +401,13 @@ async def _maybe_select_letter_jump(page: Page, text: str) -> bool:
     return True
 
 
+_MIN_SCROLL_DELTA = 600  # Phase 18: clamp small model-emitted deltas so deep
+# PDPs (Best Buy AirPods Pro 3 Add-to-Cart sits ~2500-3500px down) don't burn
+# the step budget at 254px/scroll. Empirically the model's start->end coords
+# typically span 250-300px; clamping to ~one viewport-height per scroll halves
+# the steps needed to reach below-fold buttons.
+
+
 async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> None:
     # Prefer model-provided start; fall back to viewport center.
     if action.start_xy is not None:
@@ -400,13 +419,17 @@ async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> 
         ex, ey = remap(action.end_xy, viewport_css)
         dx, dy = ex - sx, ey - sy
     else:
-        step = 400
         d = action.direction or "down"
-        dx, dy = 0, (step if d == "down" else -step if d == "up" else 0)
+        dx, dy = 0, (_MIN_SCROLL_DELTA if d == "down" else -_MIN_SCROLL_DELTA if d == "up" else 0)
         if d in ("left", "right"):
-            dx = -step if d == "left" else step
+            dx = -_MIN_SCROLL_DELTA if d == "left" else _MIN_SCROLL_DELTA
+    if dy and abs(dy) < _MIN_SCROLL_DELTA:
+        dy = _MIN_SCROLL_DELTA if dy > 0 else -_MIN_SCROLL_DELTA
+    if dx and abs(dx) < _MIN_SCROLL_DELTA:
+        dx = _MIN_SCROLL_DELTA if dx > 0 else -_MIN_SCROLL_DELTA
     pre = await _input_probe(page)
     pre_y = await _scroll_y(page)
+    pre_probe = await _scroll_layout_probe(page, sx, sy)
     await page.client.send_raw(
         "Input.dispatchMouseEvent",
         {"type": "mouseWheel", "x": sx, "y": sy, "deltaX": dx, "deltaY": dy},
@@ -418,6 +441,7 @@ async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> 
     # dispatchMouseEvent on post-navigation pages. Detect by reading
     # window.scrollY before/after; if unchanged, fall back to JS-driven
     # window.scrollBy.
+    post_y2 = post_y
     if post_y == pre_y and (dx or dy):
         await page.client.send_raw(
             "Runtime.evaluate",
@@ -427,7 +451,49 @@ async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> 
         post_y2 = await _scroll_y(page)
         if post_y2 != pre_y:
             print(f"  [dispatcher] CDP mouseWheel dropped -> JS scrollBy({dx},{dy}) (y {pre_y} -> {post_y2})", file=sys.stderr)
+    print(
+        f"  [scroll-probe] target=({sx},{sy}) d=({dx},{dy}) "
+        f"y: {pre_y}->{post_y}->{post_y2} "
+        f"docH={pre_probe.get('docH')} innerH={pre_probe.get('innerH')} "
+        f"scrollEl={pre_probe.get('se')} bodyOf={pre_probe.get('bo')}/{pre_probe.get('by')} "
+        f"htmlOf={pre_probe.get('ho')}/{pre_probe.get('hy')} "
+        f"hit={pre_probe.get('tag')}#{pre_probe.get('id')}.{pre_probe.get('cls')}",
+        file=sys.stderr,
+    )
     await asyncio.sleep(0.2)
+
+
+async def _scroll_layout_probe(page: Page, sx: int, sy: int) -> dict:
+    expr = (
+        "(() => {"
+        f"const sx={sx},sy={sy};"
+        "const e=document.elementFromPoint(sx,sy);"
+        "const cb=getComputedStyle(document.body);"
+        "const ch=getComputedStyle(document.documentElement);"
+        "return JSON.stringify({"
+        "docH:document.documentElement.scrollHeight,"
+        "innerH:window.innerHeight,"
+        "se:document.scrollingElement&&document.scrollingElement.tagName,"
+        "bo:cb.overflow,by:cb.overflowY,"
+        "ho:ch.overflow,hy:ch.overflowY,"
+        "tag:e&&e.tagName,"
+        "cls:(e&&e.className||'').toString().slice(0,60),"
+        "id:e&&e.id||''"
+        "});"
+        "})()"
+    )
+    r = await page.client.send_raw(
+        "Runtime.evaluate",
+        {"expression": expr, "returnByValue": True},
+        session_id=page.session_id,
+    )
+    val = r.get("result", {}).get("value")
+    if not val:
+        return {}
+    try:
+        return json.loads(val)
+    except (TypeError, ValueError):
+        return {}
 
 
 async def _scroll_y(page: Page) -> int:

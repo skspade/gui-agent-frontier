@@ -170,6 +170,8 @@ async def run(task_module) -> None:
                 outcome = "unhandled_action"
                 break
 
+            await page.wait_for_load()
+
             post_b64 = await page.screenshot()
             post_hash = hashlib.md5(post_b64.encode()).hexdigest()
             if post_hash == pre_hash:
