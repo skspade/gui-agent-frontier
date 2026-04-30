@@ -1,6 +1,8 @@
 """Action dispatchers. Add new handlers as the model emits new action kinds."""
 from __future__ import annotations
 import asyncio
+import json
+import sys
 
 from scripts.custom_agent.browser import Page
 from scripts.custom_agent.model import Action
@@ -53,6 +55,15 @@ async def dispatch(page: Page, action: Action, viewport_css: tuple[int, int]) ->
 
 
 async def _click(page: Page, x: int, y: int) -> None:
+    # Phase 15 follow-up: if (x, y) hits an option inside a synthetic
+    # <select> popup overlay, finalize that option directly — no real CDP
+    # click. The overlay was injected on a prior click that landed on a
+    # native <select> (headed Chromium <select> popups are OS-rendered and
+    # invisible to CDP, so the model can't see or click options without a
+    # synthetic stand-in).
+    if await _try_overlay_click(page, x, y):
+        return
+
     common = {"x": x, "y": y, "button": "left", "clickCount": 1}
     await page.client.send_raw(
         "Input.dispatchMouseEvent",
@@ -64,7 +75,87 @@ async def _click(page: Page, x: int, y: int) -> None:
         {"type": "mouseReleased", **common},
         session_id=page.session_id,
     )
+    # If the click landed on a native <select>, replace its OS-popup with
+    # a DOM overlay so the model can see the options on the next turn and
+    # click one.
+    await _maybe_open_select_overlay(page, x, y)
     await asyncio.sleep(0.5)  # let the page react
+
+
+_OVERLAY_CLASS = "__custom_agent_select_overlay__"
+
+# Idempotent JS helpers stored as module-level strings so each call only
+# ships the (x, y) numbers, not the full implementation.
+
+_OPEN_OVERLAY_JS = """
+(()=>{const x=__X__,y=__Y__;
+const el=document.elementFromPoint(x,y);
+if(!el||el.tagName!=='SELECT')return null;
+el.focus();
+document.querySelectorAll('.__OVERLAY_CLASS__').forEach(o=>o.remove());
+const rect=el.getBoundingClientRect();
+const overlay=document.createElement('div');
+overlay.className='__OVERLAY_CLASS__';
+const id='__caso_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+overlay.id=id;
+el.dataset.casoOverlayId=id;
+overlay.dataset.selectQuery=el.id?'#'+el.id:(el.getAttribute('data-test')?'[data-test='+JSON.stringify(el.getAttribute('data-test'))+']':'.'+el.className.trim().split(/\\s+/)[0]);
+overlay.style.cssText='position:fixed;left:'+rect.left+'px;top:'+(rect.bottom+4)+'px;width:'+Math.max(rect.width,260)+'px;background:white;border:2px solid #4a4a4a;z-index:2147483647;font-family:sans-serif;font-size:16px;color:#222;box-shadow:0 4px 12px rgba(0,0,0,0.25);';
+for(let i=0;i<el.options.length;i++){
+  const o=el.options[i];
+  const item=document.createElement('div');
+  item.textContent=o.text;
+  item.dataset.casoOptionValue=o.value;
+  item.dataset.casoOptionIndex=String(i);
+  const sel=(i===el.selectedIndex);
+  item.style.cssText='padding:14px 16px;border-bottom:1px solid #ccc;background:'+(sel?'#cce5ff':'white')+';font-weight:'+(sel?'600':'400')+';';
+  overlay.appendChild(item);
+}
+document.body.appendChild(overlay);
+return el.getAttribute('data-test')||el.name||el.className||'select';})()
+""".replace("__OVERLAY_CLASS__", _OVERLAY_CLASS).strip()
+
+
+_OVERLAY_CLICK_JS = """
+(()=>{const x=__X__,y=__Y__;
+const el=document.elementFromPoint(x,y);
+if(!el||!el.dataset||el.dataset.casoOptionValue===undefined)return null;
+const overlay=el.closest('.__OVERLAY_CLASS__');
+if(!overlay)return null;
+const sel=document.querySelector(overlay.dataset.selectQuery);
+if(!sel)return null;
+sel.value=el.dataset.casoOptionValue;
+sel.dispatchEvent(new Event('change',{bubbles:true}));
+sel.dispatchEvent(new Event('input',{bubbles:true}));
+overlay.remove();
+return el.textContent;})()
+""".replace("__OVERLAY_CLASS__", _OVERLAY_CLASS).strip()
+
+
+async def _maybe_open_select_overlay(page: Page, x: int, y: int) -> None:
+    js = _OPEN_OVERLAY_JS.replace("__X__", str(x)).replace("__Y__", str(y))
+    r = await page.client.send_raw(
+        "Runtime.evaluate", {"expression": js, "returnByValue": True},
+        session_id=page.session_id,
+    )
+    label = r["result"].get("value")
+    if label:
+        print(f"  [dispatcher] opened <select> overlay: {label}", file=sys.stderr)
+
+
+async def _try_overlay_click(page: Page, x: int, y: int) -> bool:
+    """If (x, y) is on an overlay option, set the select's value and return True."""
+    js = _OVERLAY_CLICK_JS.replace("__X__", str(x)).replace("__Y__", str(y))
+    r = await page.client.send_raw(
+        "Runtime.evaluate", {"expression": js, "returnByValue": True},
+        session_id=page.session_id,
+    )
+    val = r["result"].get("value")
+    if val:
+        print(f"  [dispatcher] overlay option selected: {val!r}", file=sys.stderr)
+        await asyncio.sleep(0.5)
+        return True
+    return False
 
 
 # CDP key-event specs for the navigation-prompt's Press<X> verbs. Mobile-only
@@ -96,11 +187,19 @@ async def _type_keys(page: Page, text: str) -> None:
     """Send text as real keyboard events, character by character.
 
     Was Input.insertText (faster, but only writes to focused inputs). Switched
-    to dispatchKeyEvent so native <select> letter-jump triggers — Phase 14's
-    saucedemo sort dropdown was structurally unreachable without this. The
-    `text` param on keyDown fires both keydown and input events, which is
-    enough for both form fields and selects.
+    to dispatchKeyEvent so the events drive both form fields and other
+    focused controls. The `text` param on keyDown fires both keydown and
+    input events, which is enough for text inputs.
+
+    Special case: a focused <select>. CDP keyDown events do NOT trigger
+    Chromium's native letter-jump (the popup is OS-rendered and out of CDP
+    reach; verified empirically with all 6 keyDown payload variants in
+    Phase 15 follow-up). Detect this and apply a prefix-match programmatic
+    option-set instead, so the model's "click dropdown → type 'p'" mental
+    model continues to work end-to-end.
     """
+    if await _maybe_select_letter_jump(page, text):
+        return
     for ch in text:
         await page.client.send_raw(
             "Input.dispatchKeyEvent",
@@ -113,6 +212,39 @@ async def _type_keys(page: Page, text: str) -> None:
             session_id=page.session_id,
         )
     await asyncio.sleep(0.3)
+
+
+async def _maybe_select_letter_jump(page: Page, text: str) -> bool:
+    """If focus is on a <select>, set value to the first option whose text
+    starts with `text` (case-insensitive). Returns True if applied.
+
+    Also clears any open select overlay (we're going via the keyboard path).
+    """
+    if not text:
+        return False
+    js = (
+        "(()=>{const s=document.activeElement;"
+        "if(!s||s.tagName!=='SELECT')return null;"
+        f"const t={json.dumps(text.lower())};"
+        "for(const o of s.options){"
+        "if(o.text.toLowerCase().startsWith(t)){"
+        "s.value=o.value;s.dispatchEvent(new Event('change',{bubbles:true}));"
+        f"document.querySelectorAll('.{_OVERLAY_CLASS}').forEach(x=>x.remove());"
+        "return o.text;}}"
+        "return false;})()"
+    )
+    r = await page.client.send_raw(
+        "Runtime.evaluate", {"expression": js, "returnByValue": True},
+        session_id=page.session_id,
+    )
+    val = r["result"].get("value")
+    if val is None:
+        return False  # focus not on a select
+    if val is False:
+        print(f"  [dispatcher] focused <select> has no option starting with {text!r}", file=sys.stderr)
+        return False
+    print(f"  [dispatcher] select letter-jump: typed {text!r} -> selected {val!r}", file=sys.stderr)
+    return True
 
 
 async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> None:

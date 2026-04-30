@@ -1611,6 +1611,130 @@ No-go on this lineage at IQ3_XXS for long-horizon tasks.**
 
 ---
 
+## 2026-04-29 — Phase 15 follow-up: it was the tooling all along
+
+### TL;DR
+Both UI-Venus and Holo3 now deterministically clear **CP1 + CP2** of
+saucedemo_full_checkout (2/9 strict). The wall every model has hit
+since Phase 13 was a dispatcher gap, not a model gap: CDP `Input.dispatchMouseEvent`
+on a native `<select>` doesn't open the popup (OS-rendered, out of CDP
+reach) and doesn't focus the element (so synthesized keyboard events go
+to `<body>` and become no-ops). The "Type('p') letter-jump" trick
+documented in the Phase 14 follow-up doesn't actually work via CDP —
+Phase 14's stochastic 2/9 was likely an artifact of model-specific
+event timing, not a reproducible path.
+
+### How we found it
+A direct probe (`scripts/saucedemo_dropdown_probe.py`) drove the
+dropdown manually: clicked the select with the same dispatcher path the
+agent uses, captured `document.activeElement` after the click, then
+tried 6 different `keyDown` payload variants (with/without `text`,
+with/without `code`+`windowsVirtualKeyCode`, `rawKeyDown`+`char`+`keyUp`,
+etc.) — none triggered native letter-jump. After the click, focus is on
+`<body>`, not the select. Confirmed: this is a Chromium-CDP limitation
+on headed `<select>`s.
+
+### The fix (in `scripts/custom_agent/actions.py`)
+
+When a CDP click lands on a native `<select>` element:
+1. Force-focus it via `Runtime.evaluate` so subsequent keyboard events
+   target the select.
+2. Inject a synthetic DOM overlay positioned just below the select that
+   lists the options as styled `<div>`s with `data-caso-option-value`
+   attrs. The overlay uses generous spacing (~49px per option, 16px
+   font, padding 14×16) so the model can localize options without
+   pixel-precise targeting.
+
+When a subsequent click lands on an option in this overlay:
+1. The dispatcher detects it via `elementFromPoint` + dataset check.
+2. Sets the underlying select's `value` and dispatches `change` (and
+   `input`) events. The page's React handlers reorder products.
+3. Removes the overlay. No real CDP click is dispatched.
+
+A `letter_jump` fallback in `_type_keys` is also wired up for the case
+where focus is on a `<select>` and the model emits a `Type` (UI-Venus)
+or `write_element` (Holo3) — the dispatcher prefix-matches the typed
+text against `<option>` text content and selects the first match. No
+model used this path in the runs below — both relied on the overlay
+click — but it's there as a free affordance for the canonical "click
+dropdown then type letter" pattern.
+
+### Result
+
+| Model | Strict | Lenient | Notes |
+|---|---|---|---|
+| ui-venus-1.5-8b (Phase 15 pre-fix) | 1/9 | 1/9 | Stuck on dropdown click |
+| ui-venus-1.5-8b (overlay fix, deterministic) | **2/9** | **2/9** | Cleared CP1 + CP2; failed CP3 (Add-to-cart click off-target) |
+| holo3-35b-a3b (Phase 15 pre-fix) | 1/9 | 1/9 | Stuck on dropdown click |
+| holo3-35b-a3b (overlay fix, deterministic) | **2/9** | **2/9** | Same — cleared CP1 + CP2 via overlay; failed CP3 |
+| ui-venus-1.5-8b (Phase 14 baseline, "good day") | 2/9 | 4/9 | Stochastic; the 4/9 lenient came from later partial progress that we can't reproduce |
+
+Holo3 and UI-Venus 8B are now **tied** on this task at 2/9 strict, both
+failing at CP3 (identifying the third-cheapest item's Add-to-cart
+button). That's a model precision issue, not a tooling issue. Holo3's
+~10-15pp gap vs the 122B API model and IQ3_XXS quantization both
+plausibly explain it not pulling ahead.
+
+### Findings (new vs prior follow-up)
+
+7. **CDP `Input.dispatchMouseEvent` on a native `<select>` is a
+   no-op.** The element doesn't focus, the popup doesn't render. None
+   of 6 keyDown payload shapes I tried recovered the letter-jump path.
+   The "click + type letter" affordance only exists if the dispatcher
+   force-focuses the select first.
+
+8. **Phase 14's "Type('p') triggers native `<select>` letter-jump"
+   finding was wrong** (or only worked under a specific timing race
+   that no longer reproduces). The Phase 14 finding 5 in this file
+   should be read with a "best-effort, not load-bearing" caveat — the
+   real fix is the synthetic overlay added in this follow-up.
+
+9. **Visual UAT precision.** Saucedemo's 2-column product grid + the
+   way Add-to-cart buttons sit at the BOTTOM of each card means the
+   model needs both row identification AND vertical positioning to be
+   right. Both models clicked roughly at the right horizontal but
+   slightly above the button (y=355 / y=600). This is the next wall —
+   not a structural one, but the kind of fine motor precision that
+   trips up smaller VL models on grids.
+
+10. **Overlay spacing matters.** First overlay attempt used 6×12px
+    padding → ~33px per option. UI-Venus's first try off-by-one'd into
+    the option above (clicked y=268 meaning to hit y=300, hit y=170).
+    Bumped to 14×16px (~49px per option) and 16pt font — UI-Venus
+    landed correctly on the next attempt. For models with looser
+    spatial precision, generous overlay spacing is cheap insurance.
+
+### Operator-facing changes (this follow-up)
+
+- `scripts/custom_agent/actions.py` now contains the auto-focus +
+  overlay path. Both UI-Venus's `click` (after grounding-remap) and
+  Holo3's `click_at` (already-viewport) routes through the same `_click`,
+  so both models benefit from the overlay path uniformly.
+- `scripts/saucedemo_dropdown_probe.py` (kept) is the diagnostic that
+  led to the fix. Re-run if a future site has a similarly broken
+  dropdown story.
+- Per-model artifacts: `/tmp/r1_artifacts/{model}.overlay2.{log,steps,
+  final.png}` for the post-fix runs.
+
+### Verdict update
+
+Phase 15's original "Holo3 doesn't clear the bar" finding **stands**
+on the strict numbers (2/9 vs the 3/9 bar) but with an important
+qualifier: the wall is **CP3 (Add-to-cart precision)**, not the
+dropdown — a different problem than originally diagnosed. Future model
+evals against this task should be read as testing fine spatial
+precision on a 2-column product grid, not as testing dropdown
+interaction.
+
+If we want to keep using saucedemo_full_checkout as a long-horizon
+benchmark, **the next phase should re-target CP3-CP9** with awareness
+that the bar may be unreasonably hard for 8B-class models in IQ3
+quantization. A simpler benchmark (e.g., add-one-known-item, then
+proceed straight to checkout) would isolate the precision wall from
+the long-horizon planning aspect.
+
+---
+
 ## Open questions for retro
 1. ~~Are we leaving UI-Venus's grounding capability on the table by using
    browser-use? Worth a custom client for canvas-heavy use cases?~~
