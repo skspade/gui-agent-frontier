@@ -28,12 +28,22 @@ case "$MODEL" in
         DESC="MAI-UI-8B llama.cpp server (Vulkan)"
         ;;
     ui-venus-1.5-30b-a3b)
+        # MoE; default Q3_K_M (~14GB) is the only quant on disk and fits
+        # 16GB VRAM with mmproj-f16 + 32K KV. Phase 19 baseline failed on
+        # this model because the script-wide Q6_K default doesn't exist
+        # for the 30B-A3B class — file-not-found on the script's gguf
+        # check, exit 1, baseline logged "swap failed" without ever
+        # touching systemd (F-7 root cause).
         MODEL_DIR=/mnt/data/models/ui-venus-1.5-30b-a3b
         DESC="UI-Venus-1.5-30B-A3B llama.cpp server (Vulkan)"
+        QUANT="${2:-Q3_K_M}"
         ;;
     bu-30b-a3b-preview)
+        # MoE; same Q3_K_M default rationale as ui-venus-1.5-30b-a3b
+        # (Phase 19 / F-7).
         MODEL_DIR=/mnt/data/models/bu-30b-a3b-preview
         DESC="bu-30b-a3b-preview llama.cpp server (Vulkan)"
+        QUANT="${2:-Q3_K_M}"
         ;;
     holo3-35b-a3b)
         # Holo3 GGUFs from mradermacher use the .i1- imatrix prefix and a
