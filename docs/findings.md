@@ -2103,6 +2103,233 @@ to its own prompt + parser without code changes per run. E-6
 
 ---
 
+## 2026-04-30 — Phase 16: 5-stack bake-off on clean dispatcher (backlog E-6)
+
+### TL;DR
+Two models (MAI-UI-8B, UI-Venus-1.5-30B-A3B) reached
+`/checkout-complete.html` "Thank you for your order!" — the first time
+any model has cleared the full long-horizon flow on
+`saucedemo_full_checkout`. **Best strict score: MAI-UI-8B at 6/9**, beating
+the previous 2/9 ceiling held by UI-Venus 8B. Phase 13's promotion bar
+(strict ≥3/9 OR lenient ≥5/9) is now cleared by 4 of 5 candidates.
+
+The lift came from the post-Phase-15 dispatcher fixes, not from the
+models. Phase 14 follow-up's per-model scores were lower bounds; the
+real numbers reveal that several models can drive the long-horizon
+flow once CDP `Input.*` events actually deliver.
+
+**Important caveat**: both models that reached the success page did so
+with a *malformed cart* — neither actually added the Sauce Labs
+Backpack. They reached `/checkout-complete.html` because saucedemo
+accepts checkout from any cart state, including empty. "Reaching the
+success page" is a weaker signal than "completing the full task" on
+this benchmark.
+
+### Setup
+- 5 models × `saucedemo_full_checkout` (40 step max, headed). Run via
+  `/tmp/r2_bakeoff.sh` which swaps each model, runs `custom_agent.py`,
+  archives artifacts to `/tmp/r2_artifacts/<alias>.{log,steps,final.png}`.
+- Same task module as Phase 14 (9 checkpoints CP1-CP9). All on the
+  post-2026-04-29-tooling-audit dispatcher (CDP `Input.*` JS-fallback
+  active for every click / type / scroll / press_key).
+- `n=1` per model. Temperature 0.0 except Holo3 navigator at 0.7.
+
+### Results
+
+| Model | Outcome | Steps | Strict | Lenient | Final URL |
+|---|---|---|---|---|---|
+| **mai-ui-8b** (Q6_K) | done (PASS) | 22 | **6/9** | **7/9** | /checkout-complete.html |
+| ui-venus-1.5-30b-a3b (Q3_K_M) | done | 20 | 5/9 | 7/9 | /checkout-complete.html |
+| ui-venus-1.5-8b (Q6_K) | stuck_loop | 19 | 4/9 | 4/9 | /inventory-item.html?id=5 |
+| holo3-35b-a3b (IQ3_XXS) | max_steps | 40 | 3/9 | 3/9 | /inventory.html |
+| bu-30b-a3b-preview (Q3_K_M) | stuck_loop | 17 | 2/9 | 2/9 | /inventory.html |
+
+Strict scoring: each CP requires the specific intent met. Lenient
+gives partial credit when a semantically-related action succeeded
+(e.g. "added some item" instead of "added third-cheapest").
+
+### Per-model trajectory notes
+
+**MAI-UI-8B — 6/9 strict (CP1, CP2, CP3, CP5, CP7, CP9)**
+- Login → sort → added Bolt T-Shirt (correct 3rd cheapest) → Backpack
+  click landed off-screen at y=974 (no-effect) → opened cart → removed
+  Bolt T-Shirt → empty cart → checkout → form filled → press_enter
+  submitted form → click Finish → success page → answer="PASS" (only
+  model that obeyed the "PASS as first word" instruction).
+- **Failure mode**: CP4 Backpack-add click went off-viewport. The model
+  thought it had succeeded ("Add to cart for the Sauce Labs Backpack"
+  in conclusion text) but the click coord was below the visible page.
+  No-effect detection caught it but the model didn't recover.
+- **Strength**: clean state-transition handling — moved through cart →
+  checkout → form → finish without confabulation. The empty-cart path
+  worked because saucedemo doesn't validate cart contents at finish.
+
+**UI-Venus-1.5-30B-A3B — 5/9 strict (CP1, CP2, CP5, CP7, CP9)**
+- Login → sort → added Bike Light (2nd cheapest, NOT 3rd) → step 8
+  click at (954, 53) was the cart icon, not Add-Backpack →
+  accidentally opened cart → removed Bike Light → empty cart →
+  checkout → form → Continue → Finish → success page.
+- **Failure mode**: same family as MAI-UI — cart never had Backpack;
+  reached success on empty cart. Compounded by clicking 2nd-cheapest
+  instead of 3rd at CP3.
+- **Strength**: end-to-end navigation works; the "wrong items" failures
+  are visual-grounding precision, not protocol or instruction-following.
+
+**UI-Venus-1.5-8B — 4/9 strict (CP1, CP2, CP3, CP4)**
+- Login → sort → added Bolt T-Shirt → scroll → added Backpack (cart=2,
+  badge confirmed) → cart-icon click at (981, 111) was no-effect →
+  confabulated being on cart page → eventually navigated into a product
+  detail page (Fleece Jacket) → stuck-loop trying to type Last Name into
+  product detail.
+- **Failure mode**: cart-icon click at the right location but off-target;
+  cart never opened. Phase 14's same pattern. Once the cart didn't open,
+  the model lost page-state awareness for the rest of the run.
+- **Strength**: most accurate cart contents of any model — added
+  exactly the two items the task specified. "Honest" failure mode:
+  built the right cart, then got stuck without claiming success.
+
+**Holo3-35B-A3B — 3/9 strict (CP1, CP2, CP3)**
+- Login → sort → 3 add-to-cart clicks (added Bolt T-Shirt + Bike Light
+  + Test.allTheThings; Backpack never added) → scroll → 4 cart-icon
+  clicks all no-effect (clicked at (1204, 61) and (1207, 61), cart icon
+  is around (1207, 18)) → confabulated being on cart page → 30+
+  consecutive clicks at the same wrong-but-different coords narrating
+  "successfully removed Bolt T-Shirt" while the page never changed.
+- **Failure mode**: cart-icon precision miss (~40px low); after that,
+  Phase 14's confabulation-against-frozen-page pattern at full force.
+  Stuck-loop early-out didn't trip because the model alternated between
+  two coords ((463, 206) ↔ (544, 207)) so consecutive-no-effect counter
+  reset.
+- This is a regression from MAI-UI — likely the IQ3_XXS quant on a 35B
+  model gives less precision on small-target clicks than MAI-UI's Q6
+  on an 8B model.
+
+**bu-30b-a3b-preview — 2/9 strict (CP1, CP2)**
+- Login (took 6 steps, multiple clicks no-effect on form fields before
+  type worked) → sort → tried add-to-cart at (300, 500) for Onesie
+  (cheapest, NOT 3rd) → no-effect → retried same coord → no-effect →
+  cart-icon clicks all no-effect (similar to Holo3) → stuck-loop @ 16.
+- **Failure mode**: same cart-icon precision wall, but additionally
+  this model can't even find the Add-to-Cart buttons — its
+  precision-on-small-targets is the weakest of the five.
+
+### Findings (in order of importance)
+
+22. **The dispatcher fix unblocked the lower-half of the bake-off.**
+    Phase 14 follow-up scored 0/9 for MAI-UI / Holo2 / bu-30b
+    (parse_error) and 1/9 for UI-Venus 30B (stuck_loop). With the
+    silent-CDP-drop fix and per-model harness paths, **MAI-UI 6/9 and
+    UI-Venus 30B 5/9** become the new baselines. The previous "lower
+    bound, not measurement" caveat now resolves: it was lower-bound
+    by ≥4/9 in two cases. Don't trust pre-2026-04-29 bake-off numbers
+    for any model.
+
+23. **"Reached success page" ≠ "completed task" on saucedemo.**
+    Saucedemo's `/checkout-complete.html` is reachable from any cart
+    state — empty, wrong items, anything. Both top-scorers (MAI-UI,
+    UI-Venus 30B) reached it with malformed carts. CP4 (add Backpack)
+    failed for both, CP6 (only Backpack remains) failed for both
+    because the cart was empty by then. The site doesn't enforce the
+    intended state, so a smart model can confabulate progress into a
+    real success-page visit. Strict scoring per-CP catches this;
+    outcome=`done` alone does not.
+
+24. **MAI-UI-8B is the new strict-score leader on this benchmark.**
+    First time MAI-UI has outscored UI-Venus 8B in any direct
+    comparison. Phase 12 had concluded MAI-UI was a regression based
+    on Excalidraw toolbar (a visual-grounding-introspection task);
+    that conclusion stands for *that* task. On the long-horizon
+    saucedemo flow, MAI-UI's instruction-following and state-tracking
+    win out. **Promotion decision should not happen on a single
+    benchmark** — re-run Phase 12's Excalidraw toolbar smoke before
+    deciding anything operationally.
+
+25. **UI-Venus-1.5-30B-A3B's grounding precision is the binding
+    constraint, not protocol.** It executed the long-horizon flow
+    cleanly but added the wrong item at CP3 (2nd cheapest instead of
+    3rd) and missed the Add-Backpack target by clicking the cart
+    icon. Both are visual-grounding errors at the small-target /
+    similar-row scale. The Q3_K_M quant may contribute — Phase 13's
+    "test at higher quant" caveat is still open.
+
+26. **Cart-icon click precision is now the binding wall for the
+    low-tier models.** Holo3 (~40px miss), bu-30b (~40px miss),
+    UI-Venus 8B (smaller miss) all stalled at CP5. The icon's small
+    bounding box (~32x32 pixels at the top-right corner) is a
+    precision target that 4 of 5 models miss in some run. This is
+    consistent with Phase 11's finding about small-target precision
+    on dense layouts.
+
+27. **`stuck_loop` early-out doesn't catch confabulation when clicks
+    cause real page navigation.** Holo3 burned 30+ steps alternating
+    between (463, 206) and (544, 207) — both inventory clicks that
+    landed on product-name text links, navigating to product-detail
+    pages and back. The screenshot hash changes on each click (real
+    URL transition), so `no_effect=False` and the consecutive-no-effect
+    counter resets. The model meanwhile narrates "successfully removed
+    the item" while bouncing between product details. Stuck-loop
+    detection is only sensitive to *frozen-page* confabulation; *real
+    navigation that doesn't advance the task* slips through. A
+    URL-progression detector (or a "model claims a state the page
+    contradicts" check) would catch this.
+
+### Verdict
+
+**E-6 acceptance is met**: all 5 models reach at least step 5 (no
+parse_error or wrong-protocol failures) and produce real capability
+measurements. 4 of 5 clear Phase 13's promotion bar (strict ≥3/9 OR
+lenient ≥5/9). The runner-up has been replaced: **the new ceiling on
+this task is MAI-UI-8B at 6/9 strict / 7/9 lenient**, well above the
+prior 2/9 baseline.
+
+**Promotion decision is deferred** pending a re-run of Phase 12's
+Excalidraw toolbar smoke against MAI-UI on the current dispatcher.
+Phase 12 concluded MAI-UI is a regression on visual-grounding tasks;
+if that still holds, MAI-UI may be best for *long-horizon* flows but
+worse for *grounding-heavy* flows — suggesting a per-task model
+choice rather than a single default.
+
+UI-Venus-1.5-8B remains the operational default. Re-running the
+Phase 12 toolbar smoke and the canvas-heavy Excalidraw drag smoke
+against MAI-UI is the gate to changing the default.
+
+### Caveats
+
+- **n=1 per model.** Temperature 0.0 for most; Holo3 navigator is at
+  0.7. MAI-UI's 6/9 might not reproduce; Holo3's 3/9 could be a worse
+  draw than typical. Re-run with n=3 before relying on the ranking.
+- **Strict scoring is interpretive.** I scored from log + screenshot
+  inspection; another reviewer could score 1-2 CPs differently
+  (especially CP6 partial credit for "removed something" vs strict
+  "only Backpack remains"). Re-runs with the same scorer should be
+  consistent; cross-scorer noise expected.
+- **The "success page reached on empty cart" loophole is intrinsic
+  to saucedemo, not the harness.** A more meaningful long-horizon
+  benchmark would validate cart contents at the overview page (CP8)
+  before allowing finish. Worth filing as a backlog item if this
+  benchmark continues to be used.
+- **Q3_K_M vs Q6_K confound.** UI-Venus 30B and bu-30b ran at Q3_K_M
+  due to VRAM constraints; UI-Venus 8B and MAI-UI at Q6_K; Holo3 at
+  IQ3_XXS. Quant precision differences confound the model comparison.
+- **No retry / multi-shot semantics.** Each model gets one run; no
+  re-prompting or human-in-the-loop. Production agentic systems
+  typically retry on failure or plan over multi-shot trajectories.
+
+### Operator-facing changes
+
+- All 5 active-registry models can now run `saucedemo_full_checkout`
+  end-to-end without protocol errors. Use `/tmp/r2_bakeoff.sh` as the
+  reference runner for future bake-offs (path-quote the absolute
+  location of `swap_model.sh` — sudoers entry is path-specific).
+- Per-model artifacts under `/tmp/r2_artifacts/<alias>.{log,steps,final.png}`.
+- Default model unchanged: `ui-venus-1.5-8b`. MAI-UI promotion blocked
+  on a Phase 12 toolbar / Excalidraw drag re-run.
+- The "alternating-coord confabulation" loophole in stuck_loop
+  detection (finding 27) is a known harness gap; should be addressed
+  if confabulation against a frozen page reappears.
+
+---
+
 ## Open questions for retro
 1. ~~Are we leaving UI-Venus's grounding capability on the table by using
    browser-use? Worth a custom client for canvas-heavy use cases?~~

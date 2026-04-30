@@ -25,36 +25,58 @@ be done without reading the whole doc.
 
 ---
 
-## E-6 — Bake-off rerun on clean dispatcher
-**Effort: s · Priority: E · Status: ready — E-5 landed 2026-04-30**
+## E-7 — MAI-UI-8B promotion gate: re-run Phase 12 toolbar smoke
+**Effort: xs · Priority: E · Status: pending**
 
-The Phase 14 follow-up bake-off ran on a dispatcher that silently
-dropped CDP `Input.*` events on saucedemo's post-login pages
-(documented in the 2026-04-29 saucedemo flow tooling audit). Every
-wrong-target click was magnified by the bug; previous scores are
-**lower bounds, not measurements**.
+Phase 16 (findings.md, 2026-04-30) found MAI-UI-8B is the new strict-
+score leader on `saucedemo_full_checkout` (6/9 vs UI-Venus 8B's 4/9).
+Phase 12 had previously concluded MAI-UI is a regression on visual
+grounding based on the Excalidraw toolbar smoke; that conclusion was
+made on the pre-tooling-audit dispatcher.
 
-The dispatcher is now clean (`scripts/saucedemo_flow_probe.py` goes
-9/9 with DOM-truth coords) and per-model prompt routing works for
-every model in the active registry (E-5).
-
-Active registry (post 2026-04-30 trim of Holo1.5-7B + Holo2-30B-A3B):
-rerun `saucedemo_full_checkout` on **UI-Venus 8B, UI-Venus 30B-A3B,
-MAI-UI-8B, bu-30b-a3b-preview, Holo3-35B-A3B**. UI-Venus 8B's clean
-baseline is 2/9 strict; that's the bar to beat.
+Before promoting MAI-UI to default, re-run the Phase 12 smokes
+(`smokes/excalidraw_toolbar.py` and `smokes/excalidraw_drag.py`) on
+the current dispatcher. If MAI-UI's toolbar regression persists, the
+default stays UI-Venus 8B and MAI-UI becomes a per-task model choice.
+If MAI-UI ties or exceeds on toolbar/drag, promote to default.
 
 ### Acceptance
-- ✅ All 5 models reach at least step 5 of saucedemo (no parse_error
-  or wrong-protocol failures — every score is a real capability
-  measurement).
-- ✅ Findings entry comparing pre-fix / post-fix scores per model.
-- ✅ Verdict on whether any model promotes to default — the bar from
-  Phase 13 is strict ≥3/9 OR lenient ≥5/9.
+- ✅ Both Excalidraw smokes run against MAI-UI on current dispatcher.
+- ✅ Findings entry with per-smoke verdict.
+- ✅ Default-model decision: stay UI-Venus 8B, or promote MAI-UI.
 
-### Why this is *experiment*, not *strategic*
-Same as E-5: yes/no question with a definite answer once the data is
-clean. Strategic decisions (which model to default to, whether to
-keep saucedemo as a benchmark) follow from the result.
+---
+
+## F-4 — URL-progression watchdog for confabulation-against-navigation
+**Effort: s · Priority: F · Status: deferred**
+
+Phase 16 finding 27: Holo3-35B-A3B burned 30+ steps alternating
+between two coords on the inventory page that each navigated to
+different product-detail pages. Each click registered as a real page
+change (URL transition), so `no_effect=False` and the
+consecutive-no-effect stuck-loop detector reset on every step. The
+model narrated "successfully removed item" while bouncing between
+product details that have no Remove button.
+
+A complementary watchdog: track the URL after each step. If the URL
+hasn't moved through any of the saucedemo flow's expected progression
+(`/inventory.html` → `/cart.html` → `/checkout-step-one.html` →
+`/checkout-step-two.html` → `/checkout-complete.html`) for ≥10
+consecutive steps, exit early as `stuck_no_progress`.
+
+Or, more general: count *distinct* URLs visited in the last N steps;
+if N steps yield <3 unique URLs (excluding parametrized item ids),
+flag stagnation.
+
+### Acceptance
+- ✅ Holo3's Phase 16 trajectory would now exit by step ~15 instead
+  of step 39.
+- ✅ UI-Venus 8B's Phase 16 trajectory (real progress through cart
+  attempt) is NOT falsely flagged.
+
+### Don't generalize prematurely
+The Holo3 trajectory is the only known instance. If it doesn't
+recur in the next bake-off (E-7-derived), this item stays deferred.
 
 ---
 
