@@ -271,6 +271,48 @@ no-coords directional scroll.
 
 ---
 
+## E-10 — Tier-1 verify state-anchoring lift on `saucedemo_full_checkout`
+**Effort: m · Priority: E · Cell: `[class=B, H=(1,1,1,1)+P1, model=Holo3 35B-A3B]` (and UI-Venus 8B if Holo3 confirms)**
+
+Phase 19a (`docs/findings.md`, 2026-04-30): `saucedemo_full_checkout`
+moved from 1/9 (Phase 19) to 3/9 (Phase 19a) across 3 models, and Holo3
+specifically went 1/3 → 3/3. The hypothesized mechanism is
+**state-anchoring** — the cart-state line in the prompt acts as a
+working-memory aid across the 9 checkpoints, not just a termination
+signal. This is the strongest candidate the project has for a Tier-1
+attempt (n≥10, ≥95% pass rate per `docs/thesis.md`).
+
+If Tier-1 confirms the lift, the implication is broader than this one
+task: it generalizes "cart-state probe" into "deterministic state
+probe" as a long-horizon harness primitive. URL, focused-element,
+scroll-position, etc. could each be similar working-memory aids.
+
+### Steps
+1. n=10 on `saucedemo_full_checkout` against Holo3-35B-A3B IQ3_XXS at
+   harness `(1,1,1,1)+P1`. Use the `PHASE=tier1_e10` env var so rows are
+   distinguishable from Phase 19/19a.
+2. If pass rate ≥ 95%: file as the project's first Tier-1 cell. Re-run
+   the same n=10 against UI-Venus-1.5-8B Q6_K to see if the lift
+   generalizes off Holo3.
+3. If pass rate < 70%: Phase 19a's 3/3 was upper-tail luck; document and
+   close.
+4. Append outcome to `docs/findings.md` Phase 20.
+
+### Acceptance
+- 10 runs logged under `phase=tier1_e10`. Per-run screenshots archived.
+- Pass rate computed and recorded.
+- If ≥95%, the cell is marked Tier-1 in `docs/thesis.md`. If between
+  70-94%, document as Tier-2 confirmation. If <70%, refute the surprise.
+
+### Don't
+- Don't try Tier-1 on bestbuy_airpods or saucedemo_full_checkout for
+  MAI-UI — the n=3 numbers (0/3 and 0/3) don't suggest a Tier-1-eligible
+  cell exists for those.
+- Don't add new harness primitives between this and the Tier-1 attempt
+  — confound-free.
+
+---
+
 ## F-7 — `swap_model.sh` fails on back-to-back swaps to MoE models
 **Effort: s · Priority: F · Status: open · Cell: blocks `[class=*, model=ui-venus-1.5-30b-a3b OR bu-30b-a3b-preview]`**
 
