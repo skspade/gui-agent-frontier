@@ -38,7 +38,7 @@ async def verify_cart_state(page: Page, cfg: SiteConfig, url: str) -> CartState:
             f"(()=>{{const keys={keys_js};"
             "for(const k of keys){"
             "const v=localStorage.getItem(k)||sessionStorage.getItem(k);"
-            "if(v)return v;}return null;}})()"
+            "if(v)return v;}return null;})()"
         )
         r = await page.client.send_raw(
             "Runtime.evaluate", {"expression": expr, "returnByValue": True},
@@ -65,7 +65,7 @@ async def verify_cart_state(page: Page, cfg: SiteConfig, url: str) -> CartState:
             "const e=document.querySelector(s);"
             "if(e&&e.textContent){const n=parseInt(e.textContent.trim(),10);"
             "if(!isNaN(n))return String(n);}"
-            "}catch(_){}}return null;}})()"
+            "}catch(_){}}return null;})()"
         )
         r = await page.client.send_raw(
             "Runtime.evaluate", {"expression": expr, "returnByValue": True},

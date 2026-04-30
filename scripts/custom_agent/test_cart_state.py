@@ -158,3 +158,37 @@ def test_localStorage_wins_when_both_have_signal():
     assert not any("querySelector" in q for q in queries), (
         "DOM probe ran even though localStorage had a hit; strategy ordering broken"
     )
+
+
+def test_cart_state_js_expressions_have_balanced_braces_and_parens():
+    """Regression for an unbalanced-brace bug that silently broke the cart
+    probe in commits a078f0b through 204354f. The mocked tests above bypass
+    JS execution, so a syntactically broken `expression` string returned
+    `result.value=None` and the probe fell through to verification_method='none'
+    on every page. Discovered during Task 1.4 calibration when no live site
+    ever produced a cart-state hit. Lock the syntax check here; the live
+    integration is validated by Task 1.4's smoke runs.
+    """
+    page = MagicMock()
+    page.session_id = "sid"
+    page.client = MagicMock()
+    sent_exprs = []
+
+    async def send_raw(method, params, session_id=None):
+        if method == "Runtime.evaluate":
+            sent_exprs.append(params.get("expression", ""))
+        return {"result": {"value": None}}
+
+    page.client.send_raw = AsyncMock(side_effect=send_raw)
+    asyncio.run(verify_cart_state(page, SAUCEDEMO, "https://www.saucedemo.com/inventory.html"))
+
+    assert len(sent_exprs) == 2, f"expected 2 probes (localStorage + DOM), got {len(sent_exprs)}"
+    for e in sent_exprs:
+        opens, closes = e.count("{"), e.count("}")
+        assert opens == closes, (
+            f"unbalanced curly braces: opens={opens} closes={closes}\nJS: {e!r}"
+        )
+        popens, pcloses = e.count("("), e.count(")")
+        assert popens == pcloses, (
+            f"unbalanced parens: opens={popens} closes={pcloses}\nJS: {e!r}"
+        )
