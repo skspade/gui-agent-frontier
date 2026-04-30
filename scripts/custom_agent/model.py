@@ -104,6 +104,9 @@ You may execute one of the following functions:
 Click(box=(x1, y1))
 Drag(start=(x1, y1), end=(x2, y2))
 Scroll(start=(x1, y1), end=(x2, y2), direction='down/up/right/left')
+  - direction='up' = see content BELOW the current view (swipe content up)
+  - direction='down' = see content ABOVE the current view (swipe content down)
+  - Prefer (start, end) coords over direction when you can pinpoint a target.
 Type(content='')
 Launch(app='')
 Wait()

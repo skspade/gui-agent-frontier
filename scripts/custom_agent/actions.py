@@ -415,14 +415,20 @@ async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> 
     else:
         sx, sy = viewport_css[0] // 2, viewport_css[1] // 2
     # Compute deltaY from start->end if both present, else fall back to direction.
+    direction_only = (action.start_xy is None or action.end_xy is None) and action.direction is not None
     if action.start_xy is not None and action.end_xy is not None:
         ex, ey = remap(action.end_xy, viewport_css)
         dx, dy = ex - sx, ey - sy
     else:
+        # F-6: UI-Venus / mobile-grounding convention — direction names what
+        # the user "swipes", not which way the viewport moves. up = swipe
+        # content up = viewport reveals content BELOW. Sign is inverted from
+        # desktop wheel convention; the dispatcher owns the mapping so all
+        # models in MODEL_HARNESS_REGISTRY share one convention.
         d = action.direction or "down"
-        dx, dy = 0, (_MIN_SCROLL_DELTA if d == "down" else -_MIN_SCROLL_DELTA if d == "up" else 0)
-        if d in ("left", "right"):
-            dx = -_MIN_SCROLL_DELTA if d == "left" else _MIN_SCROLL_DELTA
+        dy_sign = +1 if d == "up" else -1 if d == "down" else 0
+        dx_sign = +1 if d == "left" else -1 if d == "right" else 0
+        dx, dy = dx_sign * _MIN_SCROLL_DELTA, dy_sign * _MIN_SCROLL_DELTA
     if dy and abs(dy) < _MIN_SCROLL_DELTA:
         dy = _MIN_SCROLL_DELTA if dy > 0 else -_MIN_SCROLL_DELTA
     if dx and abs(dx) < _MIN_SCROLL_DELTA:
@@ -460,6 +466,33 @@ async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> 
         f"hit={pre_probe.get('tag')}#{pre_probe.get('id')}.{pre_probe.get('cls')}",
         file=sys.stderr,
     )
+    # F-6: empirical sign-flip retry. Model's direction-word convention
+    # (swipe vs desktop) is unstable across runs — Phase 18 emitted `up`,
+    # post-fix runs emit `down`, both wanting "see content below." When a
+    # direction-keyword scroll produces no scrollY change after both the
+    # CDP wheel and the JS scrollBy fallback, retry once with the opposite
+    # sign. Coord-based scrolls are explicit and not retried.
+    if direction_only and post_y2 == pre_y and (dx or dy):
+        rx, ry = -dx, -dy
+        await page.client.send_raw(
+            "Input.dispatchMouseEvent",
+            {"type": "mouseWheel", "x": sx, "y": sy, "deltaX": rx, "deltaY": ry},
+            session_id=page.session_id,
+        )
+        await asyncio.sleep(0.2)
+        post_y3 = await _scroll_y(page)
+        if post_y3 != pre_y:
+            print(
+                f"  [scroll-fallback] direction='{action.direction}' produced no progress; "
+                f"retried with flipped sign ({rx},{ry}) -> y {pre_y}->{post_y3}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"  [scroll-fallback] direction='{action.direction}' produced no progress in either sign "
+                f"(y stuck at {pre_y}); page may be at boundary or non-scrollable.",
+                file=sys.stderr,
+            )
     await asyncio.sleep(0.2)
 
 
