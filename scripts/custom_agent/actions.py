@@ -469,10 +469,14 @@ async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> 
     # F-6: empirical sign-flip retry. Model's direction-word convention
     # (swipe vs desktop) is unstable across runs — Phase 18 emitted `up`,
     # post-fix runs emit `down`, both wanting "see content below." When a
-    # direction-keyword scroll produces no scrollY change after both the
-    # CDP wheel and the JS scrollBy fallback, retry once with the opposite
-    # sign. Coord-based scrolls are explicit and not retried.
-    if direction_only and post_y2 == pre_y and (dx or dy):
+    # vertical direction-keyword scroll produces no scrollY change after
+    # both the CDP wheel and the JS scrollBy fallback, retry once with the
+    # opposite sign. Restricted to vertical-only (dy && !dx): scrollY can't
+    # detect horizontal progress, so a horizontal retry would unconditionally
+    # reverse a working left/right scroll. The convention-instability story
+    # is vertical-only — UI-Venus's swipe training is about vertical motion.
+    # Coord-based scrolls are explicit and not retried.
+    if direction_only and post_y2 == pre_y and dy and not dx:
         rx, ry = -dx, -dy
         await page.client.send_raw(
             "Input.dispatchMouseEvent",
