@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from scripts.custom_agent.browser import Page
 from scripts.custom_agent.site_configs import SiteConfig
@@ -22,10 +21,10 @@ from scripts.custom_agent.site_configs import SiteConfig
 
 @dataclass
 class CartState:
-    cart_items: Optional[int]
+    cart_items: int | None
     confidence: str  # "high" | "medium" | "low"
     verification_method: str  # "localStorage" | "dom" | "api" | "none"
-    raw: Optional[str] = None
+    raw: str | None = None
     elapsed_ms: int = 0
 
 
@@ -56,11 +55,17 @@ async def verify_cart_state(page: Page, cfg: SiteConfig, url: str) -> CartState:
 
     if cfg.cart_count_selectors:
         sel_js = json.dumps(list(cfg.cart_count_selectors))
+        # Per-selector try/catch: a malformed CSS selector throws SyntaxError
+        # from document.querySelector — without the catch, one bad entry would
+        # silently abort the loop and skip every later selector. Matters once
+        # Task 1.4 starts editing the registry under live calibration.
         expr = (
             f"(()=>{{const sels={sel_js};"
-            "for(const s of sels){const e=document.querySelector(s);"
+            "for(const s of sels){try{"
+            "const e=document.querySelector(s);"
             "if(e&&e.textContent){const n=parseInt(e.textContent.trim(),10);"
-            "if(!isNaN(n))return String(n);}}return null;}})()"
+            "if(!isNaN(n))return String(n);}"
+            "}catch(_){}}return null;}})()"
         )
         r = await page.client.send_raw(
             "Runtime.evaluate", {"expression": expr, "returnByValue": True},

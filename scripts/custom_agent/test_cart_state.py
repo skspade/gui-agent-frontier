@@ -1,7 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from scripts.custom_agent.cart_state import verify_cart_state, CartState
+from scripts.custom_agent.cart_state import verify_cart_state, CartState, _count_from_storage
 from scripts.custom_agent.site_configs.saucedemo import CONFIG as SAUCEDEMO
 from scripts.custom_agent.site_configs._default import CONFIG as DEFAULT
 
@@ -91,3 +91,70 @@ def test_localStorage_dict_with_items_key():
     state = asyncio.run(verify_cart_state(page, SAUCEDEMO, "https://www.saucedemo.com/inventory.html"))
     assert state.cart_items == 3
     assert state.verification_method == "localStorage"
+
+
+def test_dom_invalid_selector_does_not_abort_loop():
+    """Verifies the DOM probe JS includes try/catch so a malformed selector
+    doesn't silently skip later selectors. We test by checking that the
+    constructed JS expression contains 'catch' — a behavioral assertion at
+    the harness level. (Real CDP eval would simulate the page error path.)
+    """
+    page = MagicMock()
+    page.session_id = "sid"
+    page.client = MagicMock()
+    sent_exprs = []
+
+    async def send_raw(method, params, session_id=None):
+        if method == "Runtime.evaluate":
+            sent_exprs.append(params.get("expression", ""))
+        return {"result": {"value": None}}
+
+    page.client.send_raw = AsyncMock(side_effect=send_raw)
+    asyncio.run(verify_cart_state(page, SAUCEDEMO, "https://www.saucedemo.com/"))
+
+    dom_exprs = [e for e in sent_exprs if "querySelector" in e]
+    assert dom_exprs, "DOM strategy never ran"
+    assert "catch" in dom_exprs[0], (
+        f"DOM JS must include try/catch so a bad selector doesn't abort the loop; "
+        f"got expr={dom_exprs[0]!r}"
+    )
+
+
+def test_count_from_storage_edge_cases():
+    assert _count_from_storage(None) is None
+    assert _count_from_storage("") is None
+    assert _count_from_storage([]) == 0  # empty list = 0 items
+    assert _count_from_storage({}) is None  # dict without recognized keys
+    assert _count_from_storage({"unrelated_key": 5}) is None
+    assert _count_from_storage({"count": 7}) == 7
+    assert _count_from_storage({"items": [1, 2, 3]}) == 3
+    assert _count_from_storage([1, 2, 3]) == 3
+    assert _count_from_storage(42) == 42
+    assert _count_from_storage('not json at all{') is None
+
+
+def test_localStorage_wins_when_both_have_signal():
+    """If localStorage has a hit, the DOM probe must NOT fire — locks
+    the strategy ordering invariant against future refactors."""
+    page = MagicMock()
+    page.session_id = "sid"
+    page.client = MagicMock()
+    queries = []
+
+    async def send_raw(method, params, session_id=None):
+        e = params.get("expression", "")
+        queries.append(e)
+        if "localStorage" in e:
+            return {"result": {"value": '["item-a","item-b"]'}}
+        if "querySelector" in e:
+            # Would return a hit if asked, but should never be asked.
+            return {"result": {"value": "999"}}
+        return {"result": {"value": None}}
+
+    page.client.send_raw = AsyncMock(side_effect=send_raw)
+    state = asyncio.run(verify_cart_state(page, SAUCEDEMO, "https://www.saucedemo.com/inventory.html"))
+    assert state.cart_items == 2
+    assert state.verification_method == "localStorage"
+    assert not any("querySelector" in q for q in queries), (
+        "DOM probe ran even though localStorage had a hit; strategy ordering broken"
+    )
