@@ -106,6 +106,19 @@ rows are marked `e2e` to make the scorer explicit.
 | D | UI-Venus 8B Q6_K | (1,1,1,1) | 5/9 e2e (n=3, ikea+bestbuy) — bestbuy_airpods 0/3 | **Phase 19** |
 | D | MAI-UI 8B Q6_K | (1,1,1,1) | 0/9 e2e (n=3, ikea+bestbuy) — task-level loop | **Phase 19** |
 | D | Holo3 35B-A3B IQ3_XXS | (1,1,1,1) | 6/9 e2e (n=3, ikea+bestbuy) — bestbuy_airpods 1/3 | **Phase 19** |
+| B | UI-Venus 8B Q6_K | (1,1,1,1)+P1 | 4/9 e2e (n=3) — same as P19, mean -17.8s/run | **Phase 19a** |
+| B | MAI-UI 8B Q6_K | (1,1,1,1)+P1 | 2/9 e2e (n=3) — task-loop fix recovers single-action flows only | **Phase 19a** |
+| B | Holo3 35B-A3B IQ3_XXS | (1,1,1,1)+P1 | 5/9 e2e (n=3) — full_checkout 1/3→3/3 (state-anchoring win) | **Phase 19a** |
+| D | UI-Venus 8B Q6_K | (1,1,1,1)+P1 | 4/9 e2e (n=3) — bestbuy still 0/3 (overlay cliff dominates) | **Phase 19a** |
+| D | MAI-UI 8B Q6_K | (1,1,1,1)+P1 | 0/9 e2e (n=3) — multi-step ikea/bestbuy unmoved | **Phase 19a** |
+| D | Holo3 35B-A3B IQ3_XXS | (1,1,1,1)+P1 | 5/9 e2e (n=3) — ikea_billy 2/3→3/3, bestbuy 1/3→0/3 (noise) | **Phase 19a** |
+
+**Notation note:** `(1,1,1,1)+P1` means the (H1=1, H2=1, H3=1, H4=1)
+default harness PLUS the Phase 1 cart-state-verification probe injected
+into the `previous_actions` block. P1 sits on the H4 axis (per-step state
+probe), so it's properly `(1,1,1,2)`-ish — but it's a *partial* H4=2
+(only cart state, not URL/DOM-hash assertions), so the `+P1` notation
+makes the partial-step explicit until the rest of H4=2 lands.
 
 ---
 

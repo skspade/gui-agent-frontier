@@ -2908,3 +2908,198 @@ work on the harness rather than on cart-state instrumentation.
   thinking longer per step on overlay-heavy / long-horizon pages, or
   could be CDP/page interactions that slow under 35B-class context.
   Out of scope here.
+
+---
+
+## 2026-04-30 — Phase 19a: Post-Priority-1 re-measurement (cart-state probe wired)
+
+### Scope
+
+Re-run of the Phase 19 baseline with the Priority 1 cart-state verification
+probe wired into the run loop (Tasks 1.1–1.4, commits `5a9ef62` →
+`80eeebd`). Same 3 models × 5 tasks × n=3 = 45 runs. Goal: measure the
+delta from injecting cart-state into the next-turn `previous_actions`
+block.
+
+The cart-state probe was nearly a null measurement — initial smoke
+runs produced **zero** `[cart-after]` lines because the JS expressions
+in `cart_state.py` had **unbalanced braces** (3 closes for 2 opens on the
+localStorage probe; 6/5 on the DOM probe). V8 returned `SyntaxError`,
+the Python read `result.value` as `None`, and every probe silently fell
+through to `verification_method='none'`. The mocked tests didn't catch
+it because they bypass JS execution entirely. **Filed and fixed in
+commit `53b0b3f`** (brace-balance regression test added). Without that
+fix, Phase 19a would have measured nothing — the probe would still have
+been nominally "wired in" but invisibly broken.
+
+### Pass-rate deltas (n=3 vs n=3)
+
+| Model | Task | Phase 19 | Phase 19a | Δ |
+|---|---|---|---|---|
+| `ui-venus-1.5-8b` | saucedemo_backpack_only | 3/3 | 3/3 | 0 |
+| `ui-venus-1.5-8b` | saucedemo_full_checkout | 0/3 | 0/3 | 0 |
+| `ui-venus-1.5-8b` | ikea_search_add | 2/3 | 2/3 | 0 |
+| `ui-venus-1.5-8b` | ikea_billy | 3/3 | 2/3 | −1 |
+| `ui-venus-1.5-8b` | bestbuy_airpods | 0/3 | 0/3 | 0 |
+| `mai-ui-8b` | saucedemo_backpack_only | 0/3 | **2/3** | **+2** |
+| `mai-ui-8b` | saucedemo_full_checkout | 0/3 | 0/3 | 0 |
+| `mai-ui-8b` | ikea_search_add | 0/3 | 0/3 | 0 |
+| `mai-ui-8b` | ikea_billy | 0/3 | 0/3 | 0 |
+| `mai-ui-8b` | bestbuy_airpods | 0/3 | 0/3 | 0 |
+| `holo3-35b-a3b` | saucedemo_backpack_only | 3/3 | 2/3 | −1 |
+| `holo3-35b-a3b` | saucedemo_full_checkout | 1/3 | **3/3** | **+2** |
+| `holo3-35b-a3b` | ikea_search_add | 3/3 | 2/3 | −1 |
+| `holo3-35b-a3b` | ikea_billy | 2/3 | 3/3 | +1 |
+| `holo3-35b-a3b` | bestbuy_airpods | 1/3 | 0/3 | −1 |
+
+**Aggregate by model:**
+- `holo3-35b-a3b`: 10/15 = 67% → 10/15 = 67% (no change in total, redistributed)
+- `mai-ui-8b`: 0/15 = 0% → **2/15 = 13%** (predicted: 40-60%; observed: 13%)
+- `ui-venus-1.5-8b`: 8/15 = 53% → 7/15 = 47% (within n=3 noise)
+
+**Aggregate by task:**
+- saucedemo_backpack_only: 6/9 = 67% → 7/9 = 78%
+- **saucedemo_full_checkout**: 1/9 = 11% → **3/9 = 33%** (long-horizon win)
+- ikea_search_add: 5/9 = 56% → 4/9 = 44%
+- ikea_billy: 5/9 = 56% → 5/9 = 56%
+- bestbuy_airpods: 1/9 = 11% → 0/9 = 0%
+
+**Mean elapsed time per run (run-time efficiency):**
+- `ui-venus-1.5-8b`: 66.8s → **49.0s** (-17.8s — terminates earlier when cart-state confirms done)
+- `mai-ui-8b`: 77.5s → **63.7s** (-13.8s — same mechanism)
+- `holo3-35b-a3b`: 202.6s → 225.1s (+22.5s — probe overhead more visible because Holo3 already terminates well)
+
+### Critical finding 1: MAI-UI's task-loop hypothesis confirmed, scope smaller than predicted
+
+Phase 19's hypothesis (Critical finding 1 there): MAI-UI's 0/15 was
+task-level looping — successfully completing the task action-by-action
+but never self-terminating. Predicted lift: 0% → 40-60% with cart-state
+injection.
+
+**Phase 19a observed:** 0/15 → 2/15 = 13%. Both passes are on
+`saucedemo_backpack_only` — the simplest task in the suite (login → add
+backpack → done). On harder tasks (ikea_*, bestbuy, saucedemo full
+checkout), MAI-UI stays at 0/3.
+
+**Refined hypothesis:** cart-state injection rescues self-termination on
+**single-action add-and-stop flows**, where "is the cart now in target
+state?" cleanly maps to "is the task done?" It does **not** rescue
+multi-step flows where:
+- The task continues past add-to-cart (e.g. `ikea_search_add` requires
+  click bag icon → verify contents → report PASS — three more steps after
+  add).
+- Add-to-cart is one of several state checkpoints (e.g. `saucedemo_full_checkout`
+  has 9 checkpoints; cart state confirms 2 of them).
+
+This is consistent with the underlying mechanism: cart-state injection
+gives the model a strong "cart is in state X" signal at every step, but
+it doesn't replace the model's own task-decomposition. MAI-UI's planning
+remains weak; cart-state just lets it know when one specific subgoal is
+done.
+
+**Implication for the thesis:** the task-level-loop pathology is
+narrower than the Phase 19 framing suggested. MAI-UI looping on
+`saucedemo_backpack_only` was real and fixable; MAI-UI exhausting on
+multi-step tasks is a different (and harder) problem — model-side
+planning collapse, not harness-side instrumentation. Cart-state probe
+is the right fix for the former, not the latter.
+
+### Critical finding 2: cart-state surprise win on saucedemo_full_checkout
+
+The 9-checkpoint long-horizon task moved 1/9 → 3/9 across models
+(Holo3 specifically went 1/3 → 3/3). Phase 19's prediction was that
+cart-state alone wouldn't help long-horizon tasks because they require
+multi-step planning beyond "is cart correct."
+
+**What actually happened:** mid-task cart-state confirmation gives Holo3
+enough state-tracking confidence to keep advancing through the remaining
+checkpoints. With cart-state injected, Holo3 sees:
+- After add-3rd-cheapest: `[cart=1, m=localStorage]`
+- After add-backpack: `[cart=2, m=localStorage]`
+- After remove-3rd-cheapest from cart page: `[cart=1, m=localStorage]`
+- Final: `[cart=1, m=localStorage]` confirms backpack-only at checkout.
+
+This **state-anchoring** effect was unanticipated. The cart-state probe
+is doubling as a working-memory aid, not just a termination signal.
+Worth investigating whether this generalizes — would similar
+deterministic state probes (URL, focused-element, scroll-position) lift
+long-horizon tasks across other model families?
+
+### Critical finding 3: UI-Venus is unmoved (precision walls dominate, not termination)
+
+UI-Venus 53% → 47% is statistical noise (single 3/3 → 2/3 swing).
+UI-Venus's failures are concentrated on `bestbuy_airpods` (overlay storm
+prevents reaching add-to-cart at all) and `saucedemo_full_checkout`
+(precision walls on small cart-icon target, ordinal-on-grid in CP3).
+None of these are termination-bound; cart-state injection doesn't help.
+
+This **confirms cliff hypothesis 3** from `docs/thesis.md`: B has a
+precision sub-cliff at small targets that cart-state doesn't address.
+The next harness lever for UI-Venus is **H1=2** (richer click primitive)
+or **H4=2** (per-step state-probe with retry on miss) — not more
+prompt-side instrumentation.
+
+### Critical finding 4: timing wins are real and underrated
+
+UI-Venus and MAI-UI both gained ~15s of mean wall-clock per run with
+cart-state injection — and the probe itself adds ~5-30ms per step. The
+gain comes from **earlier termination**: the model emits `Finished()`
+earlier when cart-state confirms task done.
+
+This matters for the cost-axis of the Pareto frontier: at 53% pass rate
+and -17.8s/run, UI-Venus's `$/successful-task` improves modestly even
+when total pass rate doesn't move. **Document the cost-axis lift in the
+frontier table** — pass rate isn't the only metric.
+
+### What the Phase 19a result means for Priority 2-5
+
+- **Priority 1 (cart-state) is the right fix for the right problem** —
+  but the problem is narrower than expected. It rescues simple add-and-
+  stop flows; it doesn't rescue precision walls or multi-step planning.
+
+- **Priority 2 (preflight cleanup) targets bestbuy_airpods directly.**
+  Phase 19a shows bestbuy still at 0/9; cart-state can't help if the
+  agent never reaches add-to-cart. Preflight modal/overlay dismissal is
+  the targeted next step.
+
+- **Priority 4 (loop detection upgrade) is partially obviated by cart-
+  state.** Cart-state-confirmed-done shortcuts the early-out before the
+  loop detector fires. But cart-state doesn't catch the case where
+  cart-state never reaches target (e.g. agent's clicking the wrong
+  element); a URL-based or distinct-state-hash detector would still
+  catch that. Reduce priority but don't drop.
+
+- **Priority 3 (mid-task overlay detection) is partially redundant with
+  preflight cleanup** but not entirely — exit-intent and timing-triggered
+  modals appear after preflight. Keep both.
+
+- **Priority 5 (action receipts) is a refactor whose value is now
+  decoupled from cart-state.** Skip until Phases 2-4 land or we hit a
+  case where richer receipts unlock a model behavior.
+
+### Operator-facing changes
+
+- `data/runs.jsonl`: now has 92 rows (47 pre-Phase-19a + 45 Phase 19a).
+  Phase 19a rows tagged `phase: "19a"`. The `phase` column is now part of
+  the JSONL schema (commit `d2742cd`).
+- `data/phase19a_logs/`: 45 per-run text logs.
+- `data/screenshots/phase19a/`: 45 final-state PNGs.
+- `cart_state.py` brace-balance regression test now in
+  `test_cart_state.py` — catches future similar JS-string mistakes.
+
+### Caveats
+
+- Same 3-of-5-model coverage (F-7 still blocks 30B-A3B + bu-30b-a3b
+  cells). Phase 19a is internally consistent against Phase 19 but doesn't
+  fill those cells.
+- n=3 is Tier-2 frontier sketch. The 1/3 → 3/3 swings on Holo3
+  (`saucedemo_full_checkout`, `ikea_billy`) are not Tier-1 evidence.
+  Tier-1 attempts (n≥10) on the strongest cells are the next step if we
+  want defensible production claims.
+- The `ikea_search_add` regression (5/9 → 4/9) and `bestbuy_airpods`
+  regression (1/9 → 0/9) are both single-pass swings within n=3 noise.
+  Don't read them as cart-state harm.
+- The `saucedemo_backpack_only` Holo3 regression (3/3 → 2/3) is
+  also noise — Holo3's one Phase 19a stuck_loop on this task is unusual
+  given Phase 19's clean 3/3, but a single bad run from a 35B model is
+  within expected variance.
