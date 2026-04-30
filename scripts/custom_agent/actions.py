@@ -64,6 +64,7 @@ async def _click(page: Page, x: int, y: int) -> None:
     if await _try_overlay_click(page, x, y):
         return
 
+    pre = await _input_probe(page)
     common = {"x": x, "y": y, "button": "left", "clickCount": 1}
     await page.client.send_raw(
         "Input.dispatchMouseEvent",
@@ -75,11 +76,73 @@ async def _click(page: Page, x: int, y: int) -> None:
         {"type": "mouseReleased", **common},
         session_id=page.session_id,
     )
+    await asyncio.sleep(0.15)
+    post = await _input_probe(page)
+    # Audit 2026-04-29: post navigation in saucedemo (and likely other SPAs)
+    # CDP Input.dispatchMouseEvent is silently dropped — events never reach
+    # the document. Detect by snapshotting a JS-side mousedown counter, and
+    # fall back to a JS-driven click on the element at (x, y) when no event
+    # registered. URL change also counts as success (the click triggered nav
+    # and the counter reset).
+    if post["url"] == pre["url"] and post["clicks"] <= pre["clicks"]:
+        await _js_click_fallback(page, x, y)
     # If the click landed on a native <select>, replace its OS-popup with
     # a DOM overlay so the model can see the options on the next turn and
     # click one.
     await _maybe_open_select_overlay(page, x, y)
     await asyncio.sleep(0.5)  # let the page react
+
+
+# Idempotent JS counter for CDP-input-delivery detection. Returns the
+# current mousedown / keydown counts plus the page URL so callers can
+# distinguish "click triggered navigation" (URL change) from "click landed
+# but app didn't update DOM" (counter incremented, URL unchanged) from
+# "click silently dropped" (neither).
+_INPUT_PROBE_JS = """
+(()=>{
+  if (typeof window.__caInputProbe === 'undefined') {
+    window.__caInputProbe = {clicks: 0, keys: 0};
+    document.addEventListener('mousedown', ()=>{window.__caInputProbe.clicks++;}, true);
+    document.addEventListener('keydown', ()=>{window.__caInputProbe.keys++;}, true);
+  }
+  return {clicks: window.__caInputProbe.clicks, keys: window.__caInputProbe.keys, url: location.href};
+})()
+""".strip()
+
+
+async def _input_probe(page: Page) -> dict:
+    r = await page.client.send_raw(
+        "Runtime.evaluate", {"expression": _INPUT_PROBE_JS, "returnByValue": True},
+        session_id=page.session_id,
+    )
+    return r["result"].get("value") or {"clicks": 0, "keys": 0, "url": ""}
+
+
+async def _js_click_fallback(page: Page, x: int, y: int) -> None:
+    # elementFromPoint returns the topmost element, which on some pages
+    # (e.g. saucedemo's checkout-step-one) is the FORM ancestor rather
+    # than the INPUT/BUTTON underneath. Walk elementsFromPoint and prefer
+    # the first interactive descendant — that matches user intent.
+    # Also focus inputs/textareas/selects so the next _type_keys finds
+    # an editable activeElement (Element.click alone doesn't focus those).
+    js = (
+        f"(()=>{{const els=document.elementsFromPoint({x},{y});"
+        "if(!els||!els.length)return null;"
+        "const actionable=els.find(e=>/^(INPUT|BUTTON|A|SELECT|TEXTAREA|LABEL)$/.test(e.tagName));"
+        "const t=actionable||els[0];"
+        "if((t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT')&&typeof t.focus==='function')t.focus();"
+        "t.click();"
+        "return t.tagName+(t.id?'#'+t.id:'')+(t.getAttribute&&t.getAttribute('data-test')?'['+t.getAttribute('data-test')+']':'');})()"
+    )
+    r = await page.client.send_raw(
+        "Runtime.evaluate", {"expression": js, "returnByValue": True},
+        session_id=page.session_id,
+    )
+    val = r["result"].get("value")
+    if val:
+        print(f"  [dispatcher] CDP click at ({x},{y}) silently dropped -> JS .click() on {val}", file=sys.stderr)
+    else:
+        print(f"  [dispatcher] CDP click at ({x},{y}) silently dropped AND elementFromPoint hit nothing actionable", file=sys.stderr)
 
 
 _OVERLAY_CLASS = "__custom_agent_select_overlay__"
@@ -170,6 +233,7 @@ _PRESS_SPECS = {
 
 async def _press_key(page: Page, kind: str) -> None:
     spec = _PRESS_SPECS[kind]
+    pre = await _input_probe(page)
     await page.client.send_raw(
         "Input.dispatchKeyEvent",
         {"type": "keyDown", **spec},
@@ -180,7 +244,46 @@ async def _press_key(page: Page, kind: str) -> None:
         {"type": "keyUp", **spec},
         session_id=page.session_id,
     )
+    await asyncio.sleep(0.15)
+    post = await _input_probe(page)
+    if post["url"] == pre["url"] and post["keys"] <= pre["keys"]:
+        # CDP key dropped — fall back. Only Enter has a meaningful JS
+        # equivalent (submit form / click focused button); other keys
+        # we just log.
+        if kind == "press_enter":
+            await _js_press_enter_fallback(page)
+        else:
+            print(f"  [dispatcher] CDP {kind} silently dropped, no JS fallback for this key", file=sys.stderr)
     await asyncio.sleep(0.3)
+
+
+async def _js_press_enter_fallback(page: Page) -> None:
+    js = """(()=>{
+        const el = document.activeElement;
+        if (!el) return null;
+        if (el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'button'))) {
+            el.click();
+            return 'clicked-' + el.tagName + '#' + (el.id || '');
+        }
+        const form = el.form || (el.closest && el.closest('form'));
+        if (form) {
+            if (typeof form.requestSubmit === 'function') {
+                try { form.requestSubmit(); return 'requestSubmit-#' + (form.id || ''); } catch (e) {}
+            }
+            form.submit();
+            return 'submit-#' + (form.id || '');
+        }
+        return null;
+    })()"""
+    r = await page.client.send_raw(
+        "Runtime.evaluate", {"expression": js, "returnByValue": True},
+        session_id=page.session_id,
+    )
+    val = r["result"].get("value")
+    if val:
+        print(f"  [dispatcher] CDP press_enter dropped -> JS fallback {val}", file=sys.stderr)
+    else:
+        print(f"  [dispatcher] CDP press_enter dropped AND no Enter target found", file=sys.stderr)
 
 
 async def _type_keys(page: Page, text: str) -> None:
@@ -200,6 +303,9 @@ async def _type_keys(page: Page, text: str) -> None:
     """
     if await _maybe_select_letter_jump(page, text):
         return
+    if not text:
+        return
+    pre = await _input_probe(page)
     for ch in text:
         await page.client.send_raw(
             "Input.dispatchKeyEvent",
@@ -211,7 +317,43 @@ async def _type_keys(page: Page, text: str) -> None:
             {"type": "keyUp", "key": ch},
             session_id=page.session_id,
         )
+    await asyncio.sleep(0.15)
+    post = await _input_probe(page)
+    if post["url"] == pre["url"] and post["keys"] <= pre["keys"]:
+        await _js_type_fallback(page, text)
     await asyncio.sleep(0.3)
+
+
+async def _js_type_fallback(page: Page, text: str) -> None:
+    """Set the focused input/textarea's value via the React-friendly setter
+    path (so controlled components observe the change), then dispatch
+    input + change. Used when CDP key events are silently dropped."""
+    js = (
+        "(()=>{"
+        "const el=document.activeElement;"
+        "if(!el)return null;"
+        "const tag=el.tagName;"
+        "if(tag!=='INPUT'&&tag!=='TEXTAREA')return null;"
+        "if(el.disabled||el.readOnly)return null;"
+        "const proto=tag==='INPUT'?window.HTMLInputElement.prototype:window.HTMLTextAreaElement.prototype;"
+        "const desc=Object.getOwnPropertyDescriptor(proto,'value');"
+        "const setter=desc&&desc.set;"
+        f"const next=(el.value||'')+{json.dumps(text)};"
+        "if(setter)setter.call(el,next);else el.value=next;"
+        "el.dispatchEvent(new Event('input',{bubbles:true}));"
+        "el.dispatchEvent(new Event('change',{bubbles:true}));"
+        "return tag+(el.id?'#'+el.id:'');"
+        "})()"
+    )
+    r = await page.client.send_raw(
+        "Runtime.evaluate", {"expression": js, "returnByValue": True},
+        session_id=page.session_id,
+    )
+    val = r["result"].get("value")
+    if val:
+        print(f"  [dispatcher] CDP keys silently dropped -> JS value-set on {val}", file=sys.stderr)
+    else:
+        print(f"  [dispatcher] CDP keys silently dropped AND no editable activeElement", file=sys.stderr)
 
 
 async def _maybe_select_letter_jump(page: Page, text: str) -> bool:
@@ -263,12 +405,37 @@ async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> 
         dx, dy = 0, (step if d == "down" else -step if d == "up" else 0)
         if d in ("left", "right"):
             dx = -step if d == "left" else step
+    pre = await _input_probe(page)
+    pre_y = await _scroll_y(page)
     await page.client.send_raw(
         "Input.dispatchMouseEvent",
         {"type": "mouseWheel", "x": sx, "y": sy, "deltaX": dx, "deltaY": dy},
         session_id=page.session_id,
     )
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(0.2)
+    post_y = await _scroll_y(page)
+    # CDP mouseWheel has the same silent-drop failure mode as
+    # dispatchMouseEvent on post-navigation pages. Detect by reading
+    # window.scrollY before/after; if unchanged, fall back to JS-driven
+    # window.scrollBy.
+    if post_y == pre_y and (dx or dy):
+        await page.client.send_raw(
+            "Runtime.evaluate",
+            {"expression": f"window.scrollBy({dx},{dy})", "returnByValue": True},
+            session_id=page.session_id,
+        )
+        post_y2 = await _scroll_y(page)
+        if post_y2 != pre_y:
+            print(f"  [dispatcher] CDP mouseWheel dropped -> JS scrollBy({dx},{dy}) (y {pre_y} -> {post_y2})", file=sys.stderr)
+    await asyncio.sleep(0.2)
+
+
+async def _scroll_y(page: Page) -> int:
+    r = await page.client.send_raw(
+        "Runtime.evaluate", {"expression": "window.scrollY", "returnByValue": True},
+        session_id=page.session_id,
+    )
+    return int(r["result"].get("value") or 0)
 
 
 async def _drag(page: Page, action: Action, viewport_css: tuple[int, int]) -> None:

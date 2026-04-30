@@ -1735,6 +1735,199 @@ the long-horizon planning aspect.
 
 ---
 
+## 2026-04-29 — Saucedemo flow tooling audit (CP3-CP9)
+
+### TL;DR
+The dispatcher gap exposed in the Phase 15 follow-up (CP2 dropdown) was
+the tip of the iceberg. **CDP `Input.dispatchMouseEvent` and
+`Input.dispatchKeyEvent` are silently dropped on saucedemo's
+post-login pages** — the events never reach the document. The dropdown
+fix accidentally side-stepped this for CP2 (its overlay logic runs in
+JS and never relies on CDP delivery), but every model click on
+inventory.html / cart.html / checkout-step-one.html was a no-op for
+months. Models looked like they were missing buttons; they were
+actually clicking correctly through a broken pipe.
+
+A new mechanical probe (`scripts/saucedemo_flow_probe.py`) walks
+CP1-CP9 via DOM-truth coords through the same dispatcher the agent
+loop uses. After landing detect-and-fallback in `_click`,
+`_type_keys`, `_scroll`, and `_press_key`, the probe goes **9/9**.
+Spot-check with UI-Venus 8B still bottoms out at the prior 2/9 strict
+baseline — confirming the remaining gap is model precision, not
+tooling.
+
+### How we found it
+1. Wrote the flow probe. CP1 (login) and CP2 (sort) PASSed
+   immediately. CP3 (Add-to-cart) reported `badge=None` and the
+   "Add to cart" text never changed to "Remove" — a click that
+   apparently did nothing.
+2. Initial theory: model precision. Falsified by clicking via the same
+   dispatcher with `getBoundingClientRect()`-derived center coords —
+   still failed. Coords were right; click wasn't landing.
+3. Stripped the click sequence to its CDP minimum (`Input.dispatchMouseEvent`
+   pressed/released at the rect center). Failed identically.
+4. Instrumented the page with capturing listeners on
+   `mousedown`/`pointerdown`/`click`. Pre-login: every event fires,
+   `isTrusted: true`. Post-login: **zero events fire** for the same
+   CDP call against the same target/session.
+5. Eliminated as causes: window focus
+   (`Page.bringToFront` + `Emulation.setFocusEmulationEnabled` no
+   help), session staleness (`Target.detachFromTarget` +
+   re-`attachToTarget` no help), reload (`Page.reload` no help). Only
+   `Page.navigate` away-and-back transiently restored input — too
+   brittle to use as a fix.
+6. Confirmed the ceiling: `el.click()` via `Runtime.evaluate` always
+   works, fires a non-trusted `click` event that React's onClick
+   responds to identically. JS-driven fallback is the right shape.
+
+The smoking-gun comparison (login click delivers 8 events; inventory
+click on the next attempt delivers 0) lives in the diagnostic
+artifacts at `/tmp/click_diag*.log` from the audit session.
+
+### The fix (in `scripts/custom_agent/actions.py`)
+
+Detect-and-fallback wrapped around every CDP input verb:
+
+1. **Idempotent JS counter** (`_input_probe`) installs document-level
+   capturing listeners on `mousedown` and `keydown` the first time it
+   runs on a page; subsequent calls just read the counters and the
+   current URL.
+2. Each verb (`_click`, `_type_keys`, `_press_key`, `_scroll`)
+   snapshots the probe before its CDP dispatch, sleeps 150ms, snapshots
+   again. If `url` changed → CDP click triggered navigation, success.
+   If counter incremented → CDP delivered, success. Otherwise → CDP
+   was silently dropped, fall back.
+3. Per-verb fallbacks:
+   - `_js_click_fallback` — `document.elementsFromPoint(x, y)` walks
+     the z-stack and clicks the first INPUT/BUTTON/A/SELECT/TEXTAREA/
+     LABEL it finds (else the topmost). For focusable inputs/textareas/
+     selects it also calls `.focus()` because `Element.click()` doesn't
+     focus those per spec — without focus, the next `_type_keys` has
+     no editable activeElement.
+   - `_js_type_fallback` — sets the activeElement's `value` via the
+     React-aware setter path
+     (`Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set`)
+     and dispatches `input` + `change`. Plain assignment doesn't notify
+     React's controlled-input tracker.
+   - `_js_press_enter_fallback` — clicks a focused submit/button if
+     one is active, else `form.requestSubmit()` (or `.submit()`) on
+     the enclosing form.
+   - `_scroll` — fallback is `window.scrollBy(dx, dy)`. Detected by
+     comparing `window.scrollY` before/after the CDP wheel event.
+
+The fixes are invisible to the model: same action set, same coords;
+the dispatcher silently does the right thing.
+
+### Result
+
+Mechanical probe (`saucedemo_flow_probe.py`):
+
+| Run | Score | Notes |
+|---|---|---|
+| Pre-fix (CDP-only) | 2/9 | CP1+CP2 only; same ceiling models hit |
+| Post-fix (this audit) | **9/9** | All CPs pass via dispatcher fallback |
+
+UI-Venus 8B spot-check (`scripts/custom_agent.py saucedemo_full_checkout`):
+
+| Run | Strict | Notes |
+|---|---|---|
+| Phase 15 follow-up | 2/9 | CP1+CP2; failed CP3 (model precision on Add-to-cart) |
+| Post-audit (this) | 2/9 | Same. Cleared CP1+CP2; at CP3 the model clicked Sauce Labs Onesie's button instead of Bolt T-Shirt's (~83px off vertically); cascaded into stuck-loop by step 19 |
+
+The dispatcher fallback fired on every single click and key event in
+the spot-check (~14 click fallbacks, ~3 type fallbacks, 1 scroll
+fallback). Zero CDP `Input.*` calls ever delivered to the live page.
+The fix is doing 100% of the work; the previous Phase 15 follow-up
+"clean 2/9" was carried entirely by the overlay JS path masking the
+broken CDP click underneath.
+
+### Findings
+
+11. **CDP `Input.*` is not durable across navigations on this stack.**
+    Any CDP-click that triggers a same-tab navigation breaks input
+    delivery for the rest of the page's lifetime, even after
+    `Page.reload`, `Target.detachFromTarget`+re-attach,
+    `Page.bringToFront`, or `Emulation.setFocusEmulationEnabled`.
+    The only thing that transiently restored it was navigating away
+    to about:blank then back — too brittle to rely on. Root cause not
+    identified; probably a Chromium 1208 + Wayland/Plasma + cdp-use
+    interaction. **Workaround: detect-and-fallback in the dispatcher.**
+
+12. **Hidden by the dropdown overlay all along.** Phase 15
+    follow-up's CP2 fix worked by injecting a DOM overlay and
+    intercepting clicks on overlay options in JS — completely bypassing
+    the broken CDP click path. That's why CP2 was deterministic: it
+    didn't depend on CDP delivery. Every CP3+ click had been failing
+    for the same root cause for months and read as "model precision."
+
+13. **`Element.click()` doesn't focus inputs.** Per spec, only
+    `<button>` and `<input type="submit">` get focused on programmatic
+    `.click()`. For text inputs the dispatcher must call `.focus()`
+    explicitly, or the next type action has no editable activeElement.
+    First version of the fallback missed this; CP7 type-into-form
+    failed on the first run after the click fallback landed.
+
+14. **`elementFromPoint` returns the topmost element, not the
+    actionable one.** On saucedemo's checkout-step-one, at the
+    INPUT#first-name center, `elementFromPoint` returns FORM (the
+    INPUT is a descendant but `elementFromPoint` only goes one deep
+    for the topmost). Have to walk `elementsFromPoint(x, y)` (plural)
+    and prefer the first interactive descendant in the z-stack.
+
+15. **Probe-level: cache rects per-click, not per-batch.** First
+    version of CP7 queried all four field rects up-front via
+    `rect_center` (which calls `scrollIntoView`), then clicked them.
+    Each scroll moved the page, invalidating the previous rects. The
+    `fn_xy` cached for first-name pointed at where first-name USED to
+    be before the scroll for postal-code. Lockstep query+click per
+    field is the only safe pattern.
+
+16. **React-controlled inputs need the prototype-setter trick.**
+    Naive `el.value = 'Test'` doesn't notify React's value tracker, so
+    the controlled input snaps back to its previous value on next
+    re-render. Use
+    `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value)`
+    then dispatch `input` + `change`. Standard React testing pattern.
+
+### Verdict
+
+Tooling is now clean for the saucedemo_full_checkout benchmark. The
+9/9 probe baseline confirms every CP can be reached via the dispatcher
+when given DOM-truth coords. Remaining model failures (UI-Venus 8B at
+CP3, Holo3 at CP3) are unambiguously **model precision**: the model
+either picks coords for the wrong product card or loses page-state
+context after a wrong click and confabulates from there.
+
+The deferred Phase 13 5-stack bake-off can now run as a fair test of
+visual grounding precision, not a test of "does CDP click work on
+this navigation flow." The previous bake-off scores should be read as
+**lower bounds** since every wrong-target click and every focus
+failure was magnified by the silent-drop bug.
+
+### Operator-facing changes
+
+- `scripts/custom_agent/actions.py` — `_click`, `_type_keys`,
+  `_press_key`, `_scroll` all now have JS-driven fallbacks gated on
+  the `_input_probe` counter. No action-set or model-prompt changes.
+  Runtime cost: ~1-3 extra `Runtime.evaluate` calls per dispatch
+  (~10ms each over loopback WebSocket).
+- `scripts/saucedemo_flow_probe.py` — new mechanical 9-CP probe.
+  Run via `DISPLAY=:0 XAUTHORITY=/run/user/1000/xauth_rVYaGJ
+  XDG_RUNTIME_DIR=/run/user/1000 .venv/bin/python -u
+  scripts/saucedemo_flow_probe.py > /tmp/saucedemo_flow_probe.log
+  2>&1`. Should always end "9/9 checkpoints PASS" — if any drop, a
+  dispatcher regression has landed.
+- The dispatcher prints `[dispatcher]` lines to stderr describing
+  fallback decisions. Useful for diagnosing future "model said it
+  clicked X but the page didn't change" issues — if the line says
+  "JS .click() on \<wrong element\>" the model picked off-target
+  coords; if it says "elementFromPoint hit nothing actionable" the
+  model picked a non-clickable region.
+- Spot-check artifact: `/tmp/uivenus_spotcheck.log` (UI-Venus 8B,
+  19 steps, stuck_loop after model lost page-state context at CP3).
+
+---
+
 ## Open questions for retro
 1. ~~Are we leaving UI-Venus's grounding capability on the table by using
    browser-use? Worth a custom client for canvas-heavy use cases?~~
