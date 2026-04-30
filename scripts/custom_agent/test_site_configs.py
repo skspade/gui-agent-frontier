@@ -21,11 +21,20 @@ def test_bestbuy_url_matches_bestbuy_config():
     assert cfg.name == "bestbuy"
 
 
-def test_default_config_has_no_host_patterns():
+def test_default_does_not_preempt_specific_config():
     """The _default fallback must have empty host_patterns so it never
     pre-empts a more specific config."""
     cfg = match_site_config("https://www.saucedemo.com/")
     assert cfg.name == "saucedemo"  # not _default — saucedemo wins
+
+
+def test_suffix_match_does_not_match_substring_only():
+    """notikea.com must NOT match the ikea config — substring match would
+    incorrectly classify it. Suffix match (host == p or host.endswith("." + p))
+    is the right semantic.
+    """
+    cfg = match_site_config("https://www.notikea.com/")
+    assert cfg.name == "_default", f"expected fallback to _default, got {cfg.name}"
 
 
 def test_site_config_dataclass_fields():

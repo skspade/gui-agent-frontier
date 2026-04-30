@@ -25,10 +25,11 @@ def _all_configs() -> list[SiteConfig]:
 
 
 def match_site_config(url: str) -> SiteConfig:
-    """Return the first config whose host_patterns substring-match the URL's
+    """Return the first config whose host_patterns suffix-match the URL's
     host. Falls back to _default when nothing matches."""
     host = (urlparse(url).hostname or "").lower()
     for cfg in _all_configs():
-        if any(p in host for p in cfg.host_patterns):
+        # Suffix match (not substring): "ikea.com" must NOT match "notikea.com".
+        if any(host == p or host.endswith("." + p) for p in cfg.host_patterns):
             return cfg
     return _all_configs()[-1]  # _default
