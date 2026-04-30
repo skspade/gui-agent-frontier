@@ -8,3 +8,8 @@ TASK = (
 START_URL = "https://www.saucedemo.com/"
 HEADLESS = True
 MAX_STEPS = 25
+
+# Task class (see docs/thesis.md): A — known-site DOM short-horizon
+# (Excluded from frontier mapping: Phase 2 found Chromium headless cart-icon
+# bug confounds the model signal.)
+TASK_CLASS = "A"

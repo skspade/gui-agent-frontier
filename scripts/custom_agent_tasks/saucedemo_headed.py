@@ -14,3 +14,6 @@ TASK = (
 START_URL = "https://www.saucedemo.com/"
 HEADLESS = False
 MAX_STEPS = 25
+
+# Task class (see docs/thesis.md): A — known-site DOM short-horizon
+TASK_CLASS = "A"

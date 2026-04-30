@@ -9,3 +9,6 @@ TASK = (
 START_URL = "https://excalidraw.com/"
 HEADLESS = False
 MAX_STEPS = 25
+
+# Task class (see docs/thesis.md): C — visual-grounding-required (toolbar enumeration + introspection)
+TASK_CLASS = "C"

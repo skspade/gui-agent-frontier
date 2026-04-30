@@ -22,3 +22,6 @@ TASK = (
     "(5) report a final summary listing the toolbar tools and the active "
     "tool. Be thorough about counting toolbar icons - do not stop at 'eraser'."
 )
+
+# Task class (see docs/thesis.md): C — visual-grounding-required (toolbar enumeration + introspection)
+TASK_CLASS = "C"

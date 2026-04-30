@@ -17,3 +17,6 @@ TASK = (
     "visible on the canvas. If you cannot complete the task, report what "
     "blocked you rather than pretending to succeed."
 )
+
+# Task class (see docs/thesis.md): C — visual-grounding-required (canvas drag)
+TASK_CLASS = "C"

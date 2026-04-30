@@ -17,3 +17,6 @@ TASK = (
 MAX_STEPS = 25
 HEADLESS = False
 MAX_ACTIONS_PER_STEP = 2
+
+# Task class (see docs/thesis.md): A — known-site DOM short-horizon
+TASK_CLASS = "A"

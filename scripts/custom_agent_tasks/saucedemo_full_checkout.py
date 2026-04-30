@@ -38,3 +38,6 @@ TASK = (
 START_URL = "https://www.saucedemo.com/"
 HEADLESS = False
 MAX_STEPS = 40
+
+# Task class (see docs/thesis.md): B — known-site DOM long-horizon w/ grounding pinches
+TASK_CLASS = "B"

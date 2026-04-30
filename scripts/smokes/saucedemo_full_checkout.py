@@ -49,3 +49,6 @@ TASK = (
 MAX_STEPS = 40
 HEADLESS = False
 MAX_ACTIONS_PER_STEP = 2
+
+# Task class (see docs/thesis.md): B — known-site DOM long-horizon w/ grounding pinches
+TASK_CLASS = "B"

@@ -1,16 +1,43 @@
 # vision-model
 
-Local deployment + agent-stack experimentation around `inclusionAI/UI-Venus-1.5-8B`,
-a Qwen3-VL-based GUI grounding model. Served by llama.cpp on Vulkan,
-exercised by `browser-use` for browser automation.
+## Goal
 
-Detailed history (every smoke test, every fix, every dead end) lives in
-`docs/findings.md`. Read that before designing a new test or changing the
-stack — most of the gotchas have already been hit and documented.
+Map the **Pareto frontier of (task class, harness sophistication, model
+size)** for local GUI grounding agents. The question is not "is local
+8B good enough?" but:
 
-Concrete next-up work is in `docs/backlog.md` — each item is hand-offable
-with steps, file paths, and acceptance criteria. Pick from there if you're
-looking for "what to do next."
+> For task class X, what is the minimum (model size, harness
+> sophistication) that achieves Y% reliability at Z× lower cost than a
+> frontier API model?
+
+Different task classes — known-site DOM short-horizon (A), known-site
+DOM long-horizon with grounding pinches (B), visual-grounding-required
+(C), novel real-world e-commerce (D) — sit on different parts of the
+frontier. The contribution is identifying *where the cliffs are* — for
+example, whether class C is parameter-bound or harness-bound, or
+whether overlay-handling on class D collapses the spread between
+models.
+
+**Read `docs/thesis.md` first** for the framing (task classes, harness
+axes, cost model, currently-known frontier, cliff hypotheses).
+
+## Concrete state and history
+
+The stack is the apparatus for filling cells on the frontier:
+`inclusionAI/UI-Venus-1.5-8B` (and friends — see Models below) served
+by llama.cpp on Vulkan, exercised by `browser-use` for richly-DOM'd
+pages and a custom CDP agent (`scripts/custom_agent.py`) for canvas /
+grounding-heavy work.
+
+- Detailed history (every smoke test, every fix, every dead end) lives
+  in `docs/findings.md`. Read the relevant phase before designing a
+  new test or changing the stack — most of the gotchas have already
+  been hit and documented.
+- Concrete next-up work is in `docs/backlog.md`, organized as
+  cell-fills `[class=…, H=…, model=…]` plus tactical items. Each item
+  is hand-offable with steps, file paths, and acceptance criteria.
+- Smoke / task modules carry a `TASK_CLASS` constant ("A" / "B" / "C"
+  / "D") matching the taxonomy in `docs/thesis.md`.
 
 ## Inference server
 
