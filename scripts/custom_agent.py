@@ -30,6 +30,7 @@ from scripts.custom_agent.model import (
     step_grounding,
 )
 from scripts.custom_agent.actions import dispatch
+from scripts.custom_agent.run_log import append_run, classify_failure, DEFAULT_LOG
 
 # Harness paths:
 #   uivenus  - <action>/<conclusion> tag grammar (UI-Venus 8B + 30B-A3B)
@@ -203,13 +204,13 @@ async def run(task_module) -> None:
         FINAL_PNG.write_bytes(base64.b64decode(await page.screenshot()))
         elapsed = time.time() - t0
         print(f"\n=== outcome: {outcome} | steps: {len(history)} | elapsed: {elapsed:.1f}s ===")
-        from scripts.custom_agent.run_log import append_run, DEFAULT_LOG
         append_run(DEFAULT_LOG, {
             "task": task_module.__name__.rsplit(".", 1)[-1],
             "task_class": getattr(task_module, "TASK_CLASS", None),
             "model": os.environ.get("MODEL", "ui-venus-1.5-8b"),
             "harness": HARNESS,
             "outcome": outcome,
+            "category": classify_failure(outcome=outcome, steps=len(history)),
             "steps": len(history),
             "elapsed_s": round(elapsed, 1),
             "final_screenshot": str(FINAL_PNG),
