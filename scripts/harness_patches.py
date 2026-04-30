@@ -10,20 +10,25 @@ it's a defensive harness improvement, not model-specific tuning.
 Apply via `import harness_patches` at the top of any smoke runner. The
 import has the side effect of installing the patches.
 
-The patch wraps `InputTextAction.model_validate` to strip whitespace
-from the `text` field before Pydantic constructs the action. This is
-the entry point browser-use uses when parsing action JSON from the
-LLM, so the trim happens before the field reaches the input handler.
+Hook point: `Registry.execute_action` is the entry where browser-use
+constructs `InputTextAction(**params)` — patching the dict before
+construction is the only spot that catches all paths (the param_model's
+`model_validate` classmethod is bypassed by direct **kwargs construction
+in registry/service.py:349).
 """
-from browser_use.tools.views import InputTextAction
+from browser_use.tools.registry.service import Registry
 
-_orig_model_validate = InputTextAction.model_validate
-
-
-def _stripping_model_validate(obj, *args, **kwargs):
-    if isinstance(obj, dict) and isinstance(obj.get("text"), str):
-        obj = {**obj, "text": obj["text"].strip()}
-    return _orig_model_validate(obj, *args, **kwargs)
+_orig_execute_action = Registry.execute_action
 
 
-InputTextAction.model_validate = _stripping_model_validate
+async def _stripping_execute_action(self, action_name, params, **kwargs):
+    if (
+        action_name == "input"
+        and isinstance(params, dict)
+        and isinstance(params.get("text"), str)
+    ):
+        params = {**params, "text": params["text"].strip()}
+    return await _orig_execute_action(self, action_name, params, **kwargs)
+
+
+Registry.execute_action = _stripping_execute_action

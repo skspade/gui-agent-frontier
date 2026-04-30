@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
 import importlib
 import shutil
 import subprocess
@@ -61,6 +62,7 @@ async def run(task_module) -> None:
 
         for step_idx in range(task_module.MAX_STEPS):
             b64 = await page.screenshot()
+            pre_hash = hashlib.md5(b64.encode()).hexdigest()
             try:
                 raw = model_step(task_module.TASK, history, b64)
                 action = parse_action(raw)
@@ -90,8 +92,24 @@ async def run(task_module) -> None:
             print(f"[step {step_idx}] {short.strip()} -> {action.conclusion[:80]}")
             history.append(action)
 
-            if action.kind == "done":
-                outcome = "done"
+            if action.kind in ("done", "call_user"):
+                # Phase 14 follow-up: UI-Venus-1.5-8B falsely emits Finished
+                # right after consecutive failed clicks (model treats "no
+                # progress" as "task done"). Reject when the prior 2 actions
+                # had no visible page change so we don't record a false PASS.
+                if (
+                    len(history) >= 3
+                    and history[-2].no_effect
+                    and history[-3].no_effect
+                ):
+                    print(
+                        f"[step {step_idx}] rejecting premature {action.kind}: "
+                        "prior 2 actions had no page change",
+                        file=sys.stderr,
+                    )
+                    outcome = "stuck_premature_done"
+                    break
+                outcome = action.kind
                 break
 
             try:
@@ -101,8 +119,33 @@ async def run(task_module) -> None:
                 outcome = "unhandled_action"
                 break
 
+            post_b64 = await page.screenshot()
+            post_hash = hashlib.md5(post_b64.encode()).hexdigest()
+            if post_hash == pre_hash:
+                action.no_effect = True
+                print(f"[step {step_idx}] no page change", file=sys.stderr)
+
             png_path = STEPS_DIR / f"{step_idx:03d}.png"
-            png_path.write_bytes(base64.b64decode(await page.screenshot()))
+            png_path.write_bytes(base64.b64decode(post_b64))
+
+            # Stuck-loop early-out: 5 consecutive no-effect actions means the
+            # model is perseverating against a frozen page (Phase 14 saw 14
+            # in a row before MAX_STEPS). Stop early so a stuck run costs
+            # ~15s instead of ~2 minutes.
+            streak = 0
+            for a in reversed(history):
+                if a.no_effect:
+                    streak += 1
+                else:
+                    break
+            if streak >= 5:
+                print(
+                    f"[step {step_idx}] stuck-loop early-out: {streak} "
+                    "consecutive no-effect actions",
+                    file=sys.stderr,
+                )
+                outcome = "stuck_loop"
+                break
 
         FINAL_PNG.write_bytes(base64.b64decode(await page.screenshot()))
         elapsed = time.time() - t0

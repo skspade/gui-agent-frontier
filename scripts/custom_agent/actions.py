@@ -22,18 +22,20 @@ async def dispatch(page: Page, action: Action, viewport_css: tuple[int, int]) ->
         x, y = remap(action.xy, viewport_css)
         await _click(page, x, y)
     elif action.kind == "type":
-        await page.client.send_raw(
-            "Input.insertText",
-            {"text": action.text or ""},
-            session_id=page.session_id,
-        )
-        await asyncio.sleep(0.2)
+        await _type_keys(page, action.text or "")
     elif action.kind == "scroll":
         await _scroll(page, action, viewport_css)
     elif action.kind == "drag":
         await _drag(page, action, viewport_css)
-    elif action.kind == "done":
+    elif action.kind in ("done", "call_user"):
+        # CallUser is the model's "report final answer" verb; treat it like
+        # done so a "PASS"/"FAIL" report cleanly terminates the run instead
+        # of aborting as unhandled (Phase 14 finding 4).
         return
+    elif action.kind in _PRESS_SPECS:
+        await _press_key(page, action.kind)
+    elif action.kind == "wait":
+        await asyncio.sleep(1.0)
     else:
         raise NotImplementedError(f"unhandled action kind: {action.kind!r} (raw: {action.raw!r})")
 
@@ -51,6 +53,54 @@ async def _click(page: Page, x: int, y: int) -> None:
         session_id=page.session_id,
     )
     await asyncio.sleep(0.5)  # let the page react
+
+
+# CDP key-event specs for the navigation-prompt's Press<X> verbs. Mobile-only
+# verbs (PressRecent) intentionally absent — there's no desktop equivalent
+# and we'd rather raise NotImplementedError than silently no-op.
+_PRESS_SPECS = {
+    "press_enter": {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13},
+    "press_back": {"key": "Backspace", "code": "Backspace", "windowsVirtualKeyCode": 8},
+    "press_home": {"key": "Home", "code": "Home", "windowsVirtualKeyCode": 36},
+}
+
+
+async def _press_key(page: Page, kind: str) -> None:
+    spec = _PRESS_SPECS[kind]
+    await page.client.send_raw(
+        "Input.dispatchKeyEvent",
+        {"type": "keyDown", **spec},
+        session_id=page.session_id,
+    )
+    await page.client.send_raw(
+        "Input.dispatchKeyEvent",
+        {"type": "keyUp", **spec},
+        session_id=page.session_id,
+    )
+    await asyncio.sleep(0.3)
+
+
+async def _type_keys(page: Page, text: str) -> None:
+    """Send text as real keyboard events, character by character.
+
+    Was Input.insertText (faster, but only writes to focused inputs). Switched
+    to dispatchKeyEvent so native <select> letter-jump triggers — Phase 14's
+    saucedemo sort dropdown was structurally unreachable without this. The
+    `text` param on keyDown fires both keydown and input events, which is
+    enough for both form fields and selects.
+    """
+    for ch in text:
+        await page.client.send_raw(
+            "Input.dispatchKeyEvent",
+            {"type": "keyDown", "key": ch, "text": ch},
+            session_id=page.session_id,
+        )
+        await page.client.send_raw(
+            "Input.dispatchKeyEvent",
+            {"type": "keyUp", "key": ch},
+            session_id=page.session_id,
+        )
+    await asyncio.sleep(0.3)
 
 
 async def _scroll(page: Page, action: Action, viewport_css: tuple[int, int]) -> None:

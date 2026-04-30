@@ -1,4 +1,5 @@
 """LLM client + action parser. Filled in Tasks 2-3."""
+import os
 import re
 from dataclasses import dataclass
 
@@ -15,6 +16,11 @@ class Action:
     direction: str | None = None
     raw: str = ""
     conclusion: str = ""
+    # Set by the run loop after dispatch when the post-action screenshot is
+    # byte-identical to the pre-action screenshot. Surfaced in history so the
+    # model can break out of confabulation loops where it keeps narrating
+    # progress against a frozen page (Phase 14 finding).
+    no_effect: bool = False
 
 
 class ParseError(Exception):
@@ -73,7 +79,10 @@ def parse_action(raw: str) -> Action:
 
 
 LLAMA_URL = "http://localhost:8080/v1/chat/completions"
-MODEL_NAME = "ui-venus-1.5-8b"
+# Match the alias the llama-server is currently serving. Override via MODEL=
+# env var so we can swap without editing source. Convention shared with
+# scripts/smoke_browser_use.py.
+MODEL_NAME = os.environ.get("MODEL", "ui-venus-1.5-8b")
 
 # Lifted verbatim from scripts/custom_agent_probe_nav.py (commit 6332f1c).
 # Source: inclusionAI/UI-Venus@main
@@ -167,9 +176,28 @@ def step(task: str, history: list[Action], screenshot_b64: str, *, timeout: floa
     """
     if history:
         prev = "\n".join(
-            f"step {i+1}: {a.raw}" + (f" -> {a.conclusion}" if a.conclusion else "")
+            f"step {i+1}: {a.raw}"
+            + (f" -> {a.conclusion}" if a.conclusion else "")
+            + (" [no page change]" if a.no_effect else "")
             for i, a in enumerate(history)
         )
+        # Two stuck steps in a row almost always means the model is
+        # confabulating against a frozen screenshot. Make the warning loud
+        # in the prompt rather than relying on the per-step suffix alone.
+        if len(history) >= 2 and history[-1].no_effect and history[-2].no_effect:
+            prev += (
+                "\n\n!! STOP. Your last 2 actions HAD NO EFFECT — the page "
+                "is byte-identical to before you acted. This is a FAILURE "
+                "signal, not a completion signal. The task is NOT done. "
+                "DO NOT emit Finished or CallUser on this turn. Look at the "
+                "current screenshot and pick a DIFFERENT coordinate (your "
+                "previous click missed its target) or a DIFFERENT action "
+                "(e.g. scroll to bring the target into view, click a nearby "
+                "but visually distinct element, or use PressEnter / Type to "
+                "drive a focused control). Only emit Finished after you "
+                "have confirmed via the screenshot that the goal page is "
+                "actually reached."
+            )
     else:
         prev = "(none)"
 
