@@ -1134,6 +1134,341 @@ the four candidates clears the rubric meaningfully:
 
 ---
 
+## 2026-04-29 — Phase 14: R1 — long-horizon saucedemo on the custom CDP agent
+
+Hypothesis under test: the Phase 13 saucedemo gap is a harness-fit
+problem (browser-use's element-index contract vs. UI-Venus's coord-first
+output), not a model-capability problem. R1 is the cheapest decisive
+test: run the same 9-checkpoint task against the existing coord-first
+custom CDP agent (`scripts/custom_agent.py`, Phase 11) with no harness
+changes, same model (UI-Venus-1.5-8B Q6_K). If the score lifts, the
+hypothesis stands and R2 (coord-first actions inside browser-use) is
+worth building. If it doesn't, the harness swap isn't the answer.
+
+Plan: `docs/plans/2026-04-29-harness-fit-research.md` § R1.
+
+### Setup
+
+- Server: `ui-venus-1.5-8b` Q6_K, default `vision-model.service`.
+- Harness: `scripts/custom_agent.py saucedemo_full_checkout`. New task
+  module at `scripts/custom_agent_tasks/saucedemo_full_checkout.py`
+  ports the 9-checkpoint task verbatim from
+  `scripts/smokes/saucedemo_full_checkout.py` (HEADLESS=False,
+  MAX_STEPS=40).
+- Headed Chromium (DISPLAY=:0); viewport 1232×615; per-step screenshots
+  in `/tmp/custom_agent_steps/`.
+
+### Empirical result
+
+**Verified score: 1/9** — login only (CP1). Same as Phase 13 S1 (8B
+baseline) verified score. Below Holo2's 2/9 median.
+
+The page advanced past the login form on step 4, then **did not move
+again for 14 consecutive steps**. Per-step screenshots from `004.png`
+through `017.png` plus `custom_agent_final.png` are byte-identical
+(md5 `ed910be3...` on all 15). The model's `<conclusion>` history
+reads as a confident, complete 9-step checkout (sort, add items, open
+cart, remove item, checkout, fill form, finish) — none of it
+happened.
+
+Total run: 19 steps, 71.5s, terminated `unhandled_action` (see Finding
+4 below).
+
+### Findings (in order of importance)
+
+1. **R1 hypothesis is not supported.** Removing browser-use's
+   element-index contract did not lift the verified score for
+   UI-Venus-1.5-8B on saucedemo. The bottleneck on long-horizon
+   shopping flows is not the harness's action vocabulary; it's
+   somewhere upstream of action dispatch.
+
+2. **Coord precision is the actual bottleneck on this task.** Login
+   form coords landed precisely on three different inputs (username
+   (490,282), password (490,370), Login (491,530)). Every coord after
+   that landed in dead space:
+   - Sort dropdown click `(875,138) → CSS (1078,85)` — below the
+     dropdown bar.
+   - Backpack Add-to-cart `(381,579) → CSS (469,356)` — between rows.
+   - Bolt T-Shirt Add-to-cart `(381,983) → CSS (469,604)` — at the
+     bottom edge of a 615-tall viewport, likely past the button.
+   The model can hit large centered form fields but degrades sharply
+   on smaller UI controls (sort dropdown, per-product Add-to-cart
+   buttons). This is consistent with the Phase 13 finding on the merged
+   8B but is now isolated from any harness contract effects.
+
+3. **Saucedemo's sort dropdown can't be driven by `Input.dispatchMouseEvent`
+   alone** (open question 1 from the plan, now answered). The control
+   is a native `<select>`; CDP mouse events don't open Chromium's
+   native option list, so even a perfectly targeted click won't
+   produce the option-pick step. Resolving sort needs keyboard input
+   (focus + ArrowDown + Enter) or a DOM-level `setOption`
+   equivalent — neither of which is in the custom_agent action
+   vocabulary today.
+
+4. **Bug: `call_user` is undispatched.** The model's documented action
+   set (`NAV_USER_PROMPT` line 102) includes
+   `CallUser(content='...')`, and UI-Venus reached for it as its
+   "report final answer" action at step 18 (`CallUser(content='PASS')`).
+   `scripts/custom_agent/actions.py` only handles
+   `click/type/scroll/drag/done`, so the run aborted as
+   `unhandled_action`. Fix: route `call_user` like `done`, capturing
+   the content as the final answer. (Doesn't change R1's verdict — 14
+   frames of frozen state preceded the abort — but worth landing as a
+   one-line follow-up.)
+
+5. **Confabulation is harness-independent.** The custom_agent's
+   `model.step()` feeds raw `<conclusion>` history back into the next
+   turn with no check that the page state changed. The model spun a
+   plausible 14-step narrative on top of a frozen screenshot. Same
+   pattern Phase 13 saw under browser-use; same model-side issue. A
+   "did the page change?" instrumentation probe (md5 the screenshot
+   between turns; nudge if unchanged for N steps) is the obvious
+   counter and would apply to either harness.
+
+### Verdict
+
+R1 **fails**. Per the plan's decision rule (`if R1 fails, the harness
+swap is not the answer; investigate elsewhere`), **do not proceed to
+R2 yet**. The harness-fit hypothesis isn't disproved (R2 still
+isolates a different variable: coord-first actions *inside*
+browser-use's loop/eval/memory scaffolding) but R2's expected uplift
+budget shrinks: at the verified-score level, the same model on a
+coord-first harness scored the same as on an index-first harness on
+the same task.
+
+Recommended next direction: instrument before iterating. Specifically:
+- A "page didn't change" detector in the agent loop (cheap, applies
+  to both harnesses, would have caught the 14-step confabulation
+  immediately).
+- A native-select escape hatch (keyboard-driven option pick) so
+  saucedemo's CP2 isn't structurally unreachable.
+- Then re-run R1 — only after that does R2 (coord-first browser-use)
+  give a clean signal.
+
+### Caveats
+
+- **n=1.** The confabulation lock-in starting at step 5 was decisive,
+  but a second run with different RNG (temperature is 0.0 so this
+  would only differ if the page has any per-load variance, which
+  saucedemo doesn't) wouldn't change the verdict.
+- **Viewport 1232×615** is narrow vertically. Some inventory rows
+  (e.g. Bolt T-Shirt's Add-to-cart) sit near or below the visible
+  area on the default scroll position. A wider viewport would resolve
+  some — but not all — of the missed clicks (sort dropdown is in
+  the visible area and was still missed).
+- **The R1 plan's open question 1** ("does saucedemo's Add-to-cart
+  reject CDP-synthesized clicks?") is partially answered: clicks that
+  *do* land work (we saw login work on three CDP clicks). The
+  Add-to-cart misses here are precision misses, not click-rejection
+  misses.
+
+### Operator-facing changes (active going forward)
+
+- New task module: `scripts/custom_agent_tasks/saucedemo_full_checkout.py`
+  (long-horizon 9-checkpoint flow, headed). Reusable for re-running R1
+  once instrumentation lands.
+- Open follow-up: dispatch `call_user` in `scripts/custom_agent/actions.py`
+  (one-line fix, defer until paired with the page-change detector).
+
+---
+
+## 2026-04-29 — Phase 14 follow-up: instrumented re-run + multi-model R1
+
+After the original R1 verdict (page froze on inventory; model
+confabulated checkpoints 2-9), we landed instrumentation on the
+custom CDP agent and re-ran R1 against UI-Venus-1.5-8B plus the
+remaining Phase 13 candidates. Goal: get a verifiable harness-fit
+signal even if the model keeps giving up, and answer "does any
+candidate clear the bar on a coord-first harness?"
+
+### What changed in the harness
+
+All edits are in `scripts/custom_agent.py` and
+`scripts/custom_agent/{model.py,actions.py}`. Together these are the
+"R1 instrumentation" toolkit; they apply to any task module run
+through `custom_agent.py`.
+
+1. **Page-change detector.** The run loop hashes the screenshot
+   before and after each dispatched action; mismatches set
+   `Action.no_effect = True`. The history rendered to the model
+   appends `[no page change]` per stuck action and, after 2 in a row,
+   a paragraph-level STOP warning that explicitly forbids
+   `Finished` / `CallUser` until the model verifies progress from
+   the current screenshot.
+2. **Reject premature `Finished` / `CallUser`.** If the model emits
+   either after 2 consecutive no-effect actions, the loop refuses
+   the verb and exits with `outcome="stuck_premature_done"` so a
+   stuck run can never record a false PASS.
+3. **Stuck-loop early-out.** Five consecutive no-effect actions
+   terminate with `outcome="stuck_loop"`. Without this a perseverating
+   model burns the full `MAX_STEPS` budget — UI-Venus-1.5-8B clicked
+   the same coord 14 times in a row before MAX_STEPS terminated the
+   re-run.
+4. **Keyboard primitives.** `Type` now dispatches per-character
+   `Input.dispatchKeyEvent` instead of `Input.insertText`, so native
+   `<select>` letter-jump is reachable; new dispatchers handle
+   `PressEnter`, `PressBack`, `PressHome`, `Wait`, and `CallUser`
+   (treated as `done`).
+5. **Env-driven model alias.** `MODEL_NAME` in
+   `scripts/custom_agent/model.py` reads `MODEL` from the
+   environment (default `ui-venus-1.5-8b`), matching the
+   `smoke_browser_use.py` convention. Required for the multi-model
+   bake-off below.
+
+### UI-Venus-1.5-8B re-run — same model, harness now instrumented
+
+Run: `MODEL=ui-venus-1.5-8b python scripts/custom_agent.py
+saucedemo_full_checkout`. Outcome: `max_steps_reached` after 40
+steps in 135s. **11 unique screenshot states** vs. 1 in the original
+R1 — the harness genuinely advanced the page through more of the
+flow.
+
+Verified score from the final screenshot
+(`/tmp/r1_artifacts/ui-venus-1.5-8b.final.png`):
+
+- **CP1 login** ✓ — credentials submitted, on inventory page.
+- **CP2 sort by Price low→high** ✗ — dropdown shows "Name (A to Z)";
+  sort never applied. (Native `<select>` letter-jump via `Type` was
+  available but the model didn't reach for it.)
+- **CP3 third cheapest added** ✓ by literal "third item" reading —
+  Bolt T-Shirt is in the cart on the final screenshot. ✗ by strict
+  reading of the task ("after sorting") because CP2 didn't apply.
+- **CP4 Sauce Labs Backpack added** ✓ — Backpack shows "Remove",
+  cart badge reads `2`.
+- **CP5 cart opened** ✓ — model navigated to /cart.html mid-run
+  (one of the 11 unique frames was the cart page); came back to
+  inventory before the run's end via "Back to products."
+- **CP6+** ✗ — never reached checkout.
+
+Strict score **2/9** (CP1, CP4). Lenient score 4/9 if CP3 and CP5
+are credited from intermediate frames. **Either way an improvement
+over the original R1 verified 1/9 and over Holo2's 30B-A3B Phase 13
+median of 2/9** — but the lift is from instrumentation, not from
+the harness contract per se.
+
+The instrumentation worked as designed but exposed model behaviors
+worth recording:
+
+- **Page-change detector + harsher warning still didn't stop
+  confabulated `Finished`** in the saucedemo_headed smoke. The
+  `reject_premature_done` mechanism caught it and reclassified the
+  run as `stuck_premature_done`. UI-Venus's bias toward `Finished`
+  when stuck is a model-level pattern, not something prompt
+  rewording fixes.
+- **Type (now via `dispatchKeyEvent`) is regression-clean for form
+  fields** — `standard_user` and `secret_sauce` typed without
+  issue across all UI-Venus runs.
+- **Coord precision is still the bottleneck.** Login fields hit
+  every time; small UI controls (sort dropdown, Add-to-cart, cart
+  icon) miss frequently. The instrumented run logged 21 of 40
+  steps with `no_effect`.
+
+### Multi-model bake-off on the same harness
+
+Each candidate ran the same task with `MODEL=<alias> python
+scripts/custom_agent.py saucedemo_full_checkout` after a model swap
+via `swap_model.sh`. Per-model logs and screenshots in
+`/tmp/r1_artifacts/`.
+
+| Stack | Outcome | Steps | Verified score | Notes |
+|---|---|---|---|---|
+| ui-venus-1.5-8b (Q6_K) | max_steps_reached | 40 | 2/9 strict, 4/9 lenient | 11 unique states; reached CP1+CP4, transient CP3+CP5 |
+| ui-venus-1.5-30b-a3b (Q3_K_M) | stuck_loop | 10 | 1/9 | Login fine; perseverated on sort dropdown click immediately, hit 5-no-effect bailout |
+| mai-ui-8b (Q6_K) | parse_error | 4 | 0/9 | Filled credentials but emitted `<tool_call>` instead of `<action>` at step 4 (Login click) |
+| holo2-30b-a3b (Q3_K_M) | parse_error | 4 | 0/9 | Identical trace to MAI-UI through step 3, then `<tool_call>` |
+| bu-30b-a3b-preview (Q3_K_M) | parse_error | 4 | 0/9 | Identical trace to MAI-UI through step 3, then `<tool_call>` |
+| holo1.5-7b (Q6_K) | parse_error | 0 | 0/9 | Empty `<think></think>` at step 0; UI-Venus prompt is not interpretable to it |
+
+### Findings
+
+1. **No candidate cleared a higher verified bar than UI-Venus-1.5-8B
+   on this harness.** The 30B-A3B sibling — same vocab, more
+   parameters — actually scored *lower* by stalling on the sort
+   dropdown immediately after login. Model size in the UI-Venus
+   family doesn't lift saucedemo on a coord-first harness.
+2. **MAI-UI-8B / Holo2-30B-A3B / bu-30b-a3b-preview emit
+   `<tool_call>`, not `<action>`,** at exactly the moment they need
+   to commit a click on a button (step 4, the Login submit). The
+   trace through steps 0-3 is identical across all three because
+   UI-Venus's `<action>` schema fits text-input-only steps; once
+   they need to call a "submit" verb they revert to their native
+   tool-calling mode. Evaluating these on R1 requires either (a) a
+   parser/dispatcher that handles Hermes/OpenAI tool calls, or (b)
+   a per-model prompt template (Surfer-H-CLI for Holo, browser-use
+   prompt for bu-30b). The current single-prompt setup is
+   incompatible.
+3. **Holo1.5-7B is more deeply incompatible** — emits empty
+   `<think></think>` at step 0 with no action attempt at all. A
+   different prompt structure entirely would be needed.
+4. **The instrumentation suite is reusable and was the actual
+   high-value output of this phase.** Every future
+   `custom_agent.py`-driven run now reports `no_effect`,
+   `stuck_loop`, and `stuck_premature_done` cleanly, and rejects
+   false PASSes. R2 (coord-first actions inside browser-use) and
+   R3/R4 (per-model prompt survey, custom harness) should be built
+   on top of this instrumentation rather than re-inventing it.
+
+### Verdict on the original R1 hypothesis
+
+R1's hypothesis ("the saucedemo gap is a harness-fit problem;
+removing browser-use's element-index contract unlocks the score")
+is **partially supported, but not by the harness change alone**.
+Same-model verified score lifted from 1/9 → 2/9 strict / 4/9
+lenient, but the lift came from *adding instrumentation* (page-change
+detector, reject-premature-done), not from the coord-first action
+vocabulary per se. The model's coord precision and confabulation
+biases dominate the harness contract.
+
+Decision rule per the plan: **R1 is now a soft pass on the
+"verified score" front and a hard fail on the "is the bottleneck
+the harness contract" front.** The instrumentation we landed should
+travel to *both* harnesses (browser-use and custom CDP). R2 — adding
+coord-first actions to browser-use — is now lower-priority than
+two follow-ups that apply to either harness:
+
+1. **Per-model prompt support.** 4 of 6 candidates can't be
+   evaluated with the UI-Venus prompt. Without per-model templates
+   (or a tool-calling parser path) we can't tell whether Holo2 /
+   bu-30b / MAI-UI / Holo1.5-7B beat UI-Venus on coord-first
+   harnesses.
+2. **Coord-precision uplift on small targets.** UI-Venus 8B's
+   login coords hit; sort/Add-to-cart/cart-icon coords miss. The
+   merged 8B's grounding head is the binding constraint. Phase 11's
+   refinement-via-grounding-call experiment (REFINE_CLICKS, default
+   off because it was n=1 negative) is worth re-running with the
+   instrumented harness.
+
+### Caveats
+
+- **n=1 per stack.** Temperature is 0.0; saucedemo is deterministic.
+  Variance comes from chrome's load-time animations and from the
+  exact viewport pixels at the first screenshot. Re-runs of the
+  same stack would give the same path.
+- **Quant differences across stacks** (Q6_K for the 8B/7B models,
+  Q3_K_M for the 30B-A3Bs) confound the comparison somewhat. A Q6
+  re-quant of the 30B-A3Bs would clarify but isn't the binding
+  question here — the parse_error failures are prompt-format
+  issues, not quant precision.
+- **`<tool_call>` parse_error is a symptom of harness mismatch, not
+  a model verdict.** MAI-UI / Holo2 / bu-30b are not "broken" — they
+  are speaking the wrong protocol for our harness. They might score
+  well on a tool-calling-first harness; we just can't tell from this
+  bake-off.
+
+### Operator-facing changes (active going forward)
+
+- `scripts/custom_agent.py` now exits with `outcome` ∈ {`done`,
+  `call_user`, `stuck_premature_done`, `stuck_loop`,
+  `max_steps_reached`, `parse_error`, `model_error`,
+  `unhandled_action`}. Scoring scripts should distinguish these.
+- `MODEL=<alias>` env var selects the llama-server model alias
+  for `custom_agent.py` (default `ui-venus-1.5-8b`).
+- Per-model R1 artifacts archived under `/tmp/r1_artifacts/<alias>.{log,steps,final.png}`
+  for the six stacks tested. Reusable as a baseline if the harness
+  changes again.
+
+---
+
 ## Open questions for retro
 1. ~~Are we leaving UI-Venus's grounding capability on the table by using
    browser-use? Worth a custom client for canvas-heavy use cases?~~
