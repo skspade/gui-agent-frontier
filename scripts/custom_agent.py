@@ -34,15 +34,13 @@ from scripts.custom_agent.actions import dispatch
 # Harness paths:
 #   uivenus  - <action>/<conclusion> tag grammar (UI-Venus 8B + 30B-A3B)
 #   holo3    - surfer-h-cli two-pass navigate+localize, 0-1000 normalized
-#              coords (Holo3-35B-A3B specifically; verified per-checkpoint)
-#   holo1_5  - surfer-h-cli two-pass, absolute-pixels-in-resized-image
-#              coord contract (Holo1.5-7B, Holo2-30B-A3B)
+#              coords (Holo3-35B-A3B)
 #   toolcall - Hermes-style <tool_call> emitter; covers models that ignore
 #              UI-Venus's <action> schema and revert to native tool calling
 #              when asked to commit a click (MAI-UI-8B, bu-30b-a3b-preview).
 #
 # `HARNESS=` env overrides the registry so cross-protocol experiments stay
-# possible (e.g. forcing Holo3 onto the holo1_5 path to compare).
+# possible.
 from scripts.custom_agent import harness_for
 
 HARNESS = harness_for(os.environ.get("MODEL", "ui-venus-1.5-8b"), os.environ.get("HARNESS"))
@@ -85,18 +83,15 @@ async def run(task_module) -> None:
         notes_state = ""
 
         navigate_step_holo3 = None
-        navigate_step_holo1_5 = None
         navigate_step_toolcall = None
         if HARNESS == "holo3":
             from scripts.custom_agent.holo3 import navigate_step_holo3
-        elif HARNESS == "holo1_5":
-            from scripts.custom_agent.holo1_5 import navigate_step_holo1_5
         elif HARNESS == "toolcall":
             from scripts.custom_agent.toolcall import navigate_step_toolcall
         elif HARNESS != "uivenus":
             raise SystemExit(
                 f"unknown HARNESS={HARNESS!r}; expected one of "
-                "uivenus / holo3 / holo1_5 / toolcall"
+                "uivenus / holo3 / toolcall"
             )
 
         for step_idx in range(task_module.MAX_STEPS):
@@ -107,10 +102,6 @@ async def run(task_module) -> None:
             try:
                 if HARNESS == "holo3":
                     action, notes_state = navigate_step_holo3(
-                        task_module.TASK, history, list(screens), notes_state, viewport
-                    )
-                elif HARNESS == "holo1_5":
-                    action, notes_state = navigate_step_holo1_5(
                         task_module.TASK, history, list(screens), notes_state, viewport
                     )
                 elif HARNESS == "toolcall":

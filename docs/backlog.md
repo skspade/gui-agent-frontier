@@ -25,7 +25,7 @@ be done without reading the whole doc.
 
 ---
 
-## E-6 — 5-stack bake-off rerun on clean dispatcher
+## E-6 — Bake-off rerun on clean dispatcher
 **Effort: s · Priority: E · Status: ready — E-5 landed 2026-04-30**
 
 The Phase 14 follow-up bake-off ran on a dispatcher that silently
@@ -35,21 +35,18 @@ wrong-target click was magnified by the bug; previous scores are
 **lower bounds, not measurements**.
 
 The dispatcher is now clean (`scripts/saucedemo_flow_probe.py` goes
-9/9 with DOM-truth coords). But the per-model prompt mismatch (E-5)
-means 4 of 6 models still can't actually reach the dispatcher with a
-valid action. Rerunning before E-5 just reproduces the parse_error
-failures.
+9/9 with DOM-truth coords) and per-model prompt routing works for
+every model in the active registry (E-5).
 
-Once E-5 lands: rerun `saucedemo_full_checkout` on UI-Venus 8B,
-UI-Venus 30B-A3B, MAI-UI-8B, Holo2-30B-A3B, bu-30b-a3b-preview,
-Holo1.5-7B, Holo3-35B-A3B. Compare against Phase 14 follow-up table
-(findings.md). UI-Venus 8B's clean baseline is currently 2/9 strict;
-that's the bar.
+Active registry (post 2026-04-30 trim of Holo1.5-7B + Holo2-30B-A3B):
+rerun `saucedemo_full_checkout` on **UI-Venus 8B, UI-Venus 30B-A3B,
+MAI-UI-8B, bu-30b-a3b-preview, Holo3-35B-A3B**. UI-Venus 8B's clean
+baseline is 2/9 strict; that's the bar to beat.
 
 ### Acceptance
-- ✅ All 7 models reach at least step 5 of saucedemo (i.e. no
-  parse_error or wrong-protocol failures — every score is a real
-  capability measurement).
+- ✅ All 5 models reach at least step 5 of saucedemo (no parse_error
+  or wrong-protocol failures — every score is a real capability
+  measurement).
 - ✅ Findings entry comparing pre-fix / post-fix scores per model.
 - ✅ Verdict on whether any model promotes to default — the bar from
   Phase 13 is strict ≥3/9 OR lenient ≥5/9.

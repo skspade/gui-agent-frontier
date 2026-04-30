@@ -13,15 +13,6 @@ MODEL_HARNESS_REGISTRY = {
     "ui-venus-1.5-8b": "uivenus",
     "ui-venus-1.5-30b-a3b": "uivenus",
     "holo3-35b-a3b": "holo3",
-    # Holo1.5-7B emits absolute pixels in the smart_resize'd image — the
-    # canonical surfer-h-cli contract. Verified by model_probe on
-    # 2026-04-30: 1/1 inside-box on saucedemo username.
-    "holo1.5-7b": "holo1_5",
-    # Holo2-30B-A3B emits 0-1000 normalized coords like Holo3 / UI-Venus,
-    # NOT the surfer-h-cli absolute-pixel contract its sibling Holo1.5
-    # follows. Verified by model_probe on 2026-04-30: holo1_5 path missed
-    # by 144px; holo3 path lands inside the username field.
-    "holo2-30b-a3b": "holo3",
     "mai-ui-8b": "toolcall",
     "bu-30b-a3b-preview": "toolcall",
 }

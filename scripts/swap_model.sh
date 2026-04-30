@@ -10,7 +10,7 @@ MODEL="${1:-}"
 QUANT="${2:-Q6_K}"
 UNIT=/etc/systemd/system/vision-model.service
 
-MODELS="ui-venus-1.5-8b, mai-ui-8b, ui-venus-1.5-30b-a3b, holo2-30b-a3b, bu-30b-a3b-preview, holo1.5-7b, holo3-35b-a3b"
+MODELS="ui-venus-1.5-8b, mai-ui-8b, ui-venus-1.5-30b-a3b, bu-30b-a3b-preview, holo3-35b-a3b"
 
 if [[ -z "$MODEL" ]]; then
     echo "usage: sudo bash scripts/swap_model.sh <model-name> [quant]" >&2
@@ -31,17 +31,9 @@ case "$MODEL" in
         MODEL_DIR=/mnt/data/models/ui-venus-1.5-30b-a3b
         DESC="UI-Venus-1.5-30B-A3B llama.cpp server (Vulkan)"
         ;;
-    holo2-30b-a3b)
-        MODEL_DIR=/mnt/data/models/holo2-30b-a3b
-        DESC="Holo2-30B-A3B llama.cpp server (Vulkan)"
-        ;;
     bu-30b-a3b-preview)
         MODEL_DIR=/mnt/data/models/bu-30b-a3b-preview
         DESC="bu-30b-a3b-preview llama.cpp server (Vulkan)"
-        ;;
-    holo1.5-7b)
-        MODEL_DIR=/mnt/data/models/holo1.5-7b
-        DESC="Holo1.5-7B llama.cpp server (Vulkan)"
         ;;
     holo3-35b-a3b)
         # Holo3 GGUFs from mradermacher use the .i1- imatrix prefix and a

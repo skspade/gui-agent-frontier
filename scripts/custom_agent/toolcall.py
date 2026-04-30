@@ -1,7 +1,6 @@
 """Hermes-style tool-call path: MAI-UI-8B and bu-30b-a3b-preview.
 
-Phase 14 follow-up bake-off found these two models (and Holo2-30B-A3B,
-which is handled separately on the holo1_5 surfer-h-cli path) emit
+Phase 14 follow-up bake-off found these two models emit
 `<tool_call>{...}</tool_call>` blocks instead of UI-Venus's `<action>`
 tag whenever they need to commit a click. They share Qwen3-family
 chat templates whose `--jinja` rendering injects tool definitions and

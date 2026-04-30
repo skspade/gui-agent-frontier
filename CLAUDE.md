@@ -22,18 +22,17 @@ looking for "what to do next."
 - **Default model**: `ui-venus-1.5-8b` at Q6_K. MAI-UI-8B was evaluated in
   Phase 12 and rejected as default (regression on visual grounding); its
   weights stay on disk for re-test. Phase 13 evaluated four 30B-A3B-class
-  candidates (UI-Venus-1.5-30B-A3B, Holo2-30B-A3B, bu-30b-a3b-preview,
-  Holo1.5-7B as part of a split design) — none cleared the rubric; weights
-  stay on disk for future tests at higher quant or against different
-  long-horizon tasks.
+  candidates — none cleared the rubric. Holo1.5-7B and Holo2-30B-A3B were
+  retired from the active registry on 2026-04-30 (Holo3-35B-A3B is the
+  H-Company family entry going forward); their weights remain on disk.
 - **Context**: 32K. Browser-use prompts with screenshots eat ~17K, so 16K is
   too small. 32K fits comfortably in 16GB VRAM with Q6_K + f16 mmproj +
   f16 KV.
 - **Swap models / quants**: `sudo bash scripts/swap_model.sh <model> [quant]`.
   Models in the registry: `ui-venus-1.5-8b`, `mai-ui-8b`,
-  `ui-venus-1.5-30b-a3b`, `holo2-30b-a3b`, `bu-30b-a3b-preview`,
-  `holo1.5-7b`. The 30B-A3B/Holo entries live on `/mnt/data/models/`; the
-  8B entries stay on `/home/seans/models/`. Script rewrites the unit,
+  `ui-venus-1.5-30b-a3b`, `bu-30b-a3b-preview`, `holo3-35b-a3b`. The
+  30B-A3B / Holo3 entries live on `/mnt/data/models/`; the 8B entries
+  stay on `/home/seans/models/`. Script rewrites the unit,
   daemon-reloads, restarts, and waits for `/health`. Passwordless sudoers
   entry at `/etc/sudoers.d/vision-model-swap` lets `seans` run
   `swap_model.sh` without a password — required for autonomous
@@ -49,9 +48,12 @@ looking for "what to do next."
     - `mai-ui-8b-Q6_K.gguf` (6.7G)
     - `mmproj-mai-ui-8b-f16.gguf` (1.2G)
   - `/mnt/data/models/ui-venus-1.5-30b-a3b/` (Phase 13 — Q3_K_M, ~14GB)
-  - `/mnt/data/models/holo2-30b-a3b/` (Phase 13 — Q3_K_M, ~14GB)
   - `/mnt/data/models/bu-30b-a3b-preview/` (Phase 13 — Q3_K_M, ~14GB)
-  - `/mnt/data/models/holo1.5-7b/` (Phase 13 — Q6_K, ~6GB)
+  - `/mnt/data/models/holo3-35b-a3b/` (Phase 15 — IQ3_XXS, ~14GB)
+  - `/mnt/data/models/holo2-30b-a3b/` (Phase 13 — Q3_K_M, ~14GB; retired
+    from registry 2026-04-30, weights kept)
+  - `/mnt/data/models/holo1.5-7b/` (Phase 13 — Q6_K, ~6GB; retired from
+    registry 2026-04-30, weights kept)
 
 ## Browser-use smoke tests
 

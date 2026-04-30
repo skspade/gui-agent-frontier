@@ -13,8 +13,8 @@ for a full saucedemo_full_checkout run. Re-run on each model after adding
 or modifying a harness.
 
 Usage:
-  MODEL=holo1.5-7b .venv/bin/python -u scripts/model_probe.py
-  MODEL=mai-ui-8b  .venv/bin/python -u scripts/model_probe.py
+  MODEL=holo3-35b-a3b .venv/bin/python -u scripts/model_probe.py
+  MODEL=mai-ui-8b     .venv/bin/python -u scripts/model_probe.py
 """
 from __future__ import annotations
 
@@ -68,8 +68,8 @@ async def _ground_truth(page: Page) -> dict[str, dict]:
 def _effective_xy(action: Action, viewport: tuple[int, int]) -> tuple[int, int] | None:
     """Apply the same coord transform the dispatcher will apply.
 
-    `click` (UI-Venus) goes through grounding_remap (0-1000 -> viewport).
-    `click_at` (Holo3 / Holo1.5 / toolcall) is already viewport pixels.
+    `click` (UI-Venus, toolcall) goes through grounding_remap
+    (0-1000 -> viewport). `click_at` (Holo3) is already viewport pixels.
     """
     if action.xy is None:
         return None
@@ -130,12 +130,6 @@ async def main() -> int:
                 from scripts.custom_agent.holo3 import navigate_step_holo3
                 screens = collections.deque([b64], maxlen=3)
                 action, notes_state = navigate_step_holo3(
-                    TASK, history, list(screens), notes_state, viewport
-                )
-            elif harness == "holo1_5":
-                from scripts.custom_agent.holo1_5 import navigate_step_holo1_5
-                screens = collections.deque([b64], maxlen=3)
-                action, notes_state = navigate_step_holo1_5(
                     TASK, history, list(screens), notes_state, viewport
                 )
             elif harness == "toolcall":
