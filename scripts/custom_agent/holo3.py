@@ -420,7 +420,7 @@ def parse_holo3(parsed: dict) -> Action:
     conclusion = parsed.get("thought", "") or ""
 
     if kind == "click_element":
-        return Action(kind="click", xy=(inner["x"], inner["y"]), raw=raw, conclusion=conclusion)
+        return Action(kind="click_at", xy=(inner["x"], inner["y"]), raw=raw, conclusion=conclusion)
     if kind == "write_element":
         return Action(
             kind="click_then_type",

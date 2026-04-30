@@ -30,7 +30,7 @@ def main() -> int:
                     "y": 200,
                 },
             },
-            {"want_kind": "click", "xy": (100, 200), "conclusion": "click the login button"},
+            {"want_kind": "click_at", "xy": (100, 200), "conclusion": "click the login button"},
         ),
         (
             "write_element",

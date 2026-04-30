@@ -23,11 +23,15 @@ async def dispatch(page: Page, action: Action, viewport_css: tuple[int, int]) ->
         await _click(page, x, y)
     elif action.kind == "type":
         await _type_keys(page, action.text or "")
+    elif action.kind == "click_at":
+        # Holo3 click_element: coords already in viewport pixels (the holo3
+        # localizer rescaled). Bypass the 0-1000 grounding remap that the
+        # plain "click" kind applies for UI-Venus.
+        await _click(page, action.xy[0], action.xy[1])
     elif action.kind == "click_then_type":
         # Holo3 write_element compounds a click + a type into one model
-        # action (the dispatcher unfolds them). Coords are already in
-        # viewport pixels — the holo3 localizer rescaled them — so we
-        # bypass the 0-1000 grounding remap.
+        # action (the dispatcher unfolds them). Coords are viewport pixels
+        # (same reason as click_at), so we bypass remap here too.
         x, y = action.xy
         await _click(page, x, y)
         await _type_keys(page, action.text or "")
