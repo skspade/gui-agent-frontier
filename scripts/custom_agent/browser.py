@@ -36,6 +36,12 @@ def launch_chromium(
         f"--remote-debugging-port={port}",
         f"--user-data-dir={user_data_dir}",
         f"--window-size={window_size[0]},{window_size[1]}",
+        # Pin DPR=1 so CDP screenshot dims equal CSS viewport dims. Required
+        # for Holo3 / Holo1.5 native harnesses, which emit ABSOLUTE pixel
+        # coords — at the host's native DPR (~2.5x on this Plasma+Wayland
+        # setup) the localizer's coord-to-CSS rescale would fall outside
+        # the viewport. UI-Venus path is unaffected (0-1000 normalized).
+        "--force-device-scale-factor=1",
         "--disable-blink-features=AutomationControlled",
         "--no-first-run",
         "--no-default-browser-check",

@@ -23,6 +23,14 @@ async def dispatch(page: Page, action: Action, viewport_css: tuple[int, int]) ->
         await _click(page, x, y)
     elif action.kind == "type":
         await _type_keys(page, action.text or "")
+    elif action.kind == "click_then_type":
+        # Holo3 write_element compounds a click + a type into one model
+        # action (the dispatcher unfolds them). Coords are already in
+        # viewport pixels — the holo3 localizer rescaled them — so we
+        # bypass the 0-1000 grounding remap.
+        x, y = action.xy
+        await _click(page, x, y)
+        await _type_keys(page, action.text or "")
     elif action.kind == "scroll":
         await _scroll(page, action, viewport_css)
     elif action.kind == "drag":

@@ -10,7 +10,7 @@ MODEL="${1:-}"
 QUANT="${2:-Q6_K}"
 UNIT=/etc/systemd/system/vision-model.service
 
-MODELS="ui-venus-1.5-8b, mai-ui-8b, ui-venus-1.5-30b-a3b, holo2-30b-a3b, bu-30b-a3b-preview, holo1.5-7b"
+MODELS="ui-venus-1.5-8b, mai-ui-8b, ui-venus-1.5-30b-a3b, holo2-30b-a3b, bu-30b-a3b-preview, holo1.5-7b, holo3-35b-a3b"
 
 if [[ -z "$MODEL" ]]; then
     echo "usage: sudo bash scripts/swap_model.sh <model-name> [quant]" >&2
@@ -43,6 +43,17 @@ case "$MODEL" in
         MODEL_DIR=/mnt/data/models/holo1.5-7b
         DESC="Holo1.5-7B llama.cpp server (Vulkan)"
         ;;
+    holo3-35b-a3b)
+        # Holo3 GGUFs from mradermacher use the .i1- imatrix prefix and a
+        # Q8_0 mmproj instead of the project-default f16. Default quant
+        # IQ3_XXS (13.62GB) — the only quant that fits 16GB VRAM with
+        # mmproj-Q8_0 + 32K KV without OOM. Phase 15.
+        MODEL_DIR=/mnt/data/models/holo3-35b-a3b
+        DESC="Holo3-35B-A3B llama.cpp server (Vulkan)"
+        QUANT="${2:-IQ3_XXS}"
+        GGUF_OVERRIDE="${MODEL_DIR}/${MODEL}.i1-${QUANT}.gguf"
+        MMPROJ_OVERRIDE="${MODEL_DIR}/mmproj-${MODEL}-Q8_0.gguf"
+        ;;
     *)
         echo "ERROR: unknown model '$MODEL'" >&2
         echo "models: $MODELS" >&2
@@ -51,8 +62,8 @@ case "$MODEL" in
 esac
 
 ALIAS=$MODEL
-GGUF="${MODEL_DIR}/${MODEL}-${QUANT}.gguf"
-MMPROJ="${MODEL_DIR}/mmproj-${MODEL}-f16.gguf"
+GGUF="${GGUF_OVERRIDE:-${MODEL_DIR}/${MODEL}-${QUANT}.gguf}"
+MMPROJ="${MMPROJ_OVERRIDE:-${MODEL_DIR}/mmproj-${MODEL}-f16.gguf}"
 
 if [[ ! -f "$GGUF" ]]; then
     echo "ERROR: ${GGUF} does not exist." >&2
@@ -70,6 +81,14 @@ sed -i -E "s#^Description=.*#Description=${DESC}#" "$UNIT"
 sed -i -E "s#^(\s*)-m\s+\S+\.gguf#\1-m ${GGUF}#" "$UNIT"
 sed -i -E "s#^(\s*)--mmproj\s+\S+\.gguf#\1--mmproj ${MMPROJ}#" "$UNIT"
 sed -i -E "s#^(\s*)--alias\s+\S+#\1--alias ${ALIAS}#" "$UNIT"
+
+# Idempotently ensure --chat-template-kwargs '{"enable_thinking":false}' is
+# present after --jinja. Required for Holo3 (its template auto-prepends a
+# <think> block, which conflicts with strict response_format). Harmless for
+# templates that don't reference enable_thinking — a no-op kwarg.
+if ! grep -q -- "--chat-template-kwargs" "$UNIT"; then
+    sed -i -E "/^\s*--jinja(\s|$|\\\\)/a\\    --chat-template-kwargs '{\"enable_thinking\":false}' \\\\" "$UNIT"
+fi
 
 systemctl daemon-reload
 systemctl restart vision-model.service

@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import collections
 import hashlib
 import importlib
+import os
 import shutil
 import subprocess
 import sys
@@ -28,6 +30,12 @@ from scripts.custom_agent.model import (
     step_grounding,
 )
 from scripts.custom_agent.actions import dispatch
+
+# Selects which model-interface module drives the loop. "uivenus" (default)
+# uses the <action>/<conclusion> tag grammar in scripts/custom_agent/model.py;
+# "holo3" uses scripts/custom_agent/holo3.py — surfer-h-cli-style two-pass
+# navigate+localize with strict JSON response_format. Phase 15.
+HARNESS = os.environ.get("HARNESS", "uivenus")
 
 STEPS_DIR = Path("/tmp/custom_agent_steps")
 FINAL_PNG = Path("/tmp/custom_agent_final.png")
@@ -56,19 +64,43 @@ async def run(task_module) -> None:
         page, client = await Page.attach(ws)
         await page.goto(task_module.START_URL)
         viewport = await page.viewport_css()
-        print(f"[setup] viewport={viewport[0]}x{viewport[1]} headless={task_module.HEADLESS}")
+        print(f"[setup] viewport={viewport[0]}x{viewport[1]} headless={task_module.HEADLESS} harness={HARNESS}")
         history: list[Action] = []
         outcome = "max_steps_reached"
+
+        # Holo3 path needs the last 3 screenshots (navigator) + accumulating
+        # `notes` carried across turns. Initialized always so the holo3
+        # branch in-loop has a stable place to push to.
+        screens: collections.deque[str] = collections.deque(maxlen=3)
+        notes_state = ""
+
+        if HARNESS == "holo3":
+            from scripts.custom_agent.holo3 import navigate_step_holo3
+        elif HARNESS != "uivenus":
+            raise SystemExit(f"unknown HARNESS={HARNESS!r}; expected 'uivenus' or 'holo3'")
 
         for step_idx in range(task_module.MAX_STEPS):
             b64 = await page.screenshot()
             pre_hash = hashlib.md5(b64.encode()).hexdigest()
+            screens.append(b64)
+            raw = ""
             try:
-                raw = model_step(task_module.TASK, history, b64)
-                action = parse_action(raw)
+                if HARNESS == "holo3":
+                    action, notes_state = navigate_step_holo3(
+                        task_module.TASK, history, list(screens), notes_state, viewport
+                    )
+                else:
+                    raw = model_step(task_module.TASK, history, b64)
+                    action = parse_action(raw)
             except ParseError as e:
                 print(f"[step {step_idx}] parse error: {e}", file=sys.stderr)
                 print(f"[step {step_idx}] raw response:\n{raw}", file=sys.stderr)
+                outcome = "parse_error"
+                break
+            except ValueError as e:
+                # Holo3 mapper raises ValueError on unknown variant. Surface
+                # it the same as a parse error from the UI-Venus path.
+                print(f"[step {step_idx}] parse error: {e}", file=sys.stderr)
                 outcome = "parse_error"
                 break
             except Exception as e:
@@ -76,7 +108,7 @@ async def run(task_module) -> None:
                 outcome = "model_error"
                 break
 
-            if REFINE_CLICKS and action.kind == "click" and action.xy is not None:
+            if HARNESS == "uivenus" and REFINE_CLICKS and action.kind == "click" and action.xy is not None:
                 target = action.conclusion or action.raw
                 refined = step_grounding(target, b64)
                 if refined is not None and refined != action.xy:
