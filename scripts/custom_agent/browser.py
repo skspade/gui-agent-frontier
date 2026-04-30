@@ -112,6 +112,14 @@ class Page:
         v = m["cssLayoutViewport"]
         return int(v["clientWidth"]), int(v["clientHeight"])
 
+    async def url(self) -> str:
+        r = await self.client.send_raw(
+            "Runtime.evaluate",
+            {"expression": "location.href", "returnByValue": True},
+            session_id=self.session_id,
+        )
+        return r["result"].get("value") or ""
+
     async def wait_for_load(self, *, timeout_ms: int = 5000, poll_ms: int = 100) -> bool:
         # Phase 18: poll document.readyState until 'complete' or timeout.
         # Without this, post-navigation screenshots can capture a half-rendered

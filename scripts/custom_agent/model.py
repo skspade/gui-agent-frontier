@@ -21,6 +21,14 @@ class Action:
     # model can break out of confabulation loops where it keeps narrating
     # progress against a frozen page (Phase 14 finding).
     no_effect: bool = False
+    # Phase 1 / Task 1.3: cart-state probe result for the page state AFTER this
+    # action's dispatch. None when the probe wasn't run (parse-error path,
+    # done/call_user, or pre-Task-1.3 history). Set by the run loop in
+    # custom_agent.py via verify_cart_state(...). Runtime type is
+    # `CartState | None`; annotated as `object` to avoid a circular import
+    # (cart_state.py imports browser.Page; if browser ever needs anything
+    # from model.py we'd cycle).
+    cart_after: object = None
 
 
 class ParseError(Exception):
@@ -171,38 +179,64 @@ def step_grounding(
     return (x, y)
 
 
+def _render_history_block(history: list[Action]) -> str:
+    """Format the per-step `previous_actions` block for the navigator prompt.
+
+    Per-step format (square-bracket sections are conditional):
+        step <N>: <a.raw>[ -> <a.conclusion>][ [cart=<N>, m=<method>]][ [no page change]]
+
+    The cart suffix is emitted only when `a.cart_after` is set AND its
+    verification_method is something other than "none" (a "no signal" probe
+    result is silently dropped — the model already sees the screenshot, so
+    a "we don't know" line is just noise).
+
+    Appends the 2-consecutive-no-effect "STOP." block at the end when the
+    last 2 actions both had no effect (Phase 14: stops confabulation loops
+    against a frozen page).
+    """
+    if not history:
+        return "(none)"
+
+    lines = []
+    for i, a in enumerate(history):
+        line = f"step {i+1}: {a.raw}"
+        if a.conclusion:
+            line += f" -> {a.conclusion}"
+        ca = a.cart_after
+        if ca is not None and getattr(ca, "verification_method", "none") != "none":
+            line += f" [cart={ca.cart_items}, m={ca.verification_method}]"
+        if a.no_effect:
+            line += " [no page change]"
+        lines.append(line)
+    prev = "\n".join(lines)
+
+    # Two stuck steps in a row almost always means the model is
+    # confabulating against a frozen screenshot. Make the warning loud
+    # in the prompt rather than relying on the per-step suffix alone.
+    if len(history) >= 2 and history[-1].no_effect and history[-2].no_effect:
+        prev += (
+            "\n\n!! STOP. Your last 2 actions HAD NO EFFECT — the page "
+            "is byte-identical to before you acted. This is a FAILURE "
+            "signal, not a completion signal. The task is NOT done. "
+            "DO NOT emit Finished or CallUser on this turn. Look at the "
+            "current screenshot and pick a DIFFERENT coordinate (your "
+            "previous click missed its target) or a DIFFERENT action "
+            "(e.g. scroll to bring the target into view, click a nearby "
+            "but visually distinct element, or use PressEnter / Type to "
+            "drive a focused control). Only emit Finished after you "
+            "have confirmed via the screenshot that the goal page is "
+            "actually reached."
+        )
+    return prev
+
+
 def step(task: str, history: list[Action], screenshot_b64: str, *, timeout: float = 120.0) -> str:
     """Send one turn to UI-Venus. Returns raw text response.
 
     history is rendered as a compact "previous actions" summary so the model
     sees what it's done.
     """
-    if history:
-        prev = "\n".join(
-            f"step {i+1}: {a.raw}"
-            + (f" -> {a.conclusion}" if a.conclusion else "")
-            + (" [no page change]" if a.no_effect else "")
-            for i, a in enumerate(history)
-        )
-        # Two stuck steps in a row almost always means the model is
-        # confabulating against a frozen screenshot. Make the warning loud
-        # in the prompt rather than relying on the per-step suffix alone.
-        if len(history) >= 2 and history[-1].no_effect and history[-2].no_effect:
-            prev += (
-                "\n\n!! STOP. Your last 2 actions HAD NO EFFECT — the page "
-                "is byte-identical to before you acted. This is a FAILURE "
-                "signal, not a completion signal. The task is NOT done. "
-                "DO NOT emit Finished or CallUser on this turn. Look at the "
-                "current screenshot and pick a DIFFERENT coordinate (your "
-                "previous click missed its target) or a DIFFERENT action "
-                "(e.g. scroll to bring the target into view, click a nearby "
-                "but visually distinct element, or use PressEnter / Type to "
-                "drive a focused control). Only emit Finished after you "
-                "have confirmed via the screenshot that the goal page is "
-                "actually reached."
-            )
-    else:
-        prev = "(none)"
+    prev = _render_history_block(history)
 
     user_text = NAV_USER_PROMPT.format(user_task=task, previous_actions=prev)
 

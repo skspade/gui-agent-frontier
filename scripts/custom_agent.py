@@ -30,7 +30,9 @@ from scripts.custom_agent.model import (
     step_grounding,
 )
 from scripts.custom_agent.actions import dispatch
+from scripts.custom_agent.cart_state import verify_cart_state
 from scripts.custom_agent.run_log import append_run, classify_failure, DEFAULT_LOG
+from scripts.custom_agent.site_configs import match_site_config
 
 # Harness paths:
 #   uivenus  - <action>/<conclusion> tag grammar (UI-Venus 8B + 30B-A3B)
@@ -172,6 +174,18 @@ async def run(task_module) -> None:
                 break
 
             await page.wait_for_load()
+
+            # Cart-state probe (Phase 1 / Priority 1). Cheap (~10-30ms in practice; <500ms
+            # budget) so runs every step. The result is attached to the action and rendered
+            # in the next-turn prompt's previous_actions block by _render_history_block;
+            # steps where the probe sees no signal don't pollute the prompt (the rendering
+            # layer drops verification_method=='none' silently).
+            current_url = await page.url()
+            site_cfg = match_site_config(current_url)
+            action.cart_after = await verify_cart_state(page, site_cfg, current_url)
+            ca = action.cart_after
+            if ca and ca.verification_method != "none":
+                print(f"  [cart-after] {ca.verification_method}: count={ca.cart_items} elapsed={ca.elapsed_ms}ms")
 
             post_b64 = await page.screenshot()
             post_hash = hashlib.md5(post_b64.encode()).hexdigest()
