@@ -271,6 +271,60 @@ no-coords directional scroll.
 
 ---
 
+## F-7 — `swap_model.sh` fails on back-to-back swaps to MoE models
+**Effort: s · Priority: F · Status: open · Cell: blocks `[class=*, model=ui-venus-1.5-30b-a3b OR bu-30b-a3b-preview]`**
+
+Phase 19 baseline (`docs/findings.md`, 2026-04-30): two of five model
+swaps failed at exactly the same instant during the baseline run.
+`mai-ui-8b` finished, then `swap_model.sh ui-venus-1.5-30b-a3b` failed,
+then `swap_model.sh bu-30b-a3b-preview` failed, then
+`swap_model.sh holo3-35b-a3b` succeeded — all at 14:49:08. The two
+failures bracket holo3's success in the same second, suggesting a
+transient post-unload state that resolves itself but breaks the
+script's wait-for-health timeout for back-to-back rewrites.
+
+Files for both failed-to-swap models are present and readable; the
+GGUFs / mmproj / `.cache/` are intact (Phase 13's outputs unchanged).
+So this is a swap-script / systemd / VRAM-unload issue, not a missing-
+weights issue.
+
+### Hypotheses (untested, in decreasing-confidence order)
+1. **VRAM not fully released after the prior 8B unload.** A 14GB MoE
+   (Q3_K_M) needs the full VRAM budget; if the previous server's KV
+   cache or mmproj wasn't freed, the new server fails to start and
+   systemd returns non-zero, but the GPU recovers within seconds (so
+   holo3 7s later succeeds).
+2. **`daemon-reload` race on back-to-back unit-file rewrites.** The
+   script rewrites `vision-model.service` and `daemon-reload`s for each
+   swap; three rewrites in the same second could leave systemd in a
+   transient-inconsistent state.
+3. **30B-A3B-Q3_K_M-specific load issue under the current llama.cpp
+   build.** Less likely (Phase 13 ran these models cleanly), but the
+   2026-04-29 dispatcher changes did rebuild llama-server.
+
+### Approach
+1. Reproduce: warm the server with `mai-ui-8b`, then `sudo bash
+   scripts/swap_model.sh ui-venus-1.5-30b-a3b` and capture the
+   `journalctl -u vision-model.service -n 200` output.
+2. If hypothesis 1 — add a 5-10s sleep in the swap script between
+   `systemctl stop` and `systemctl start` so VRAM has time to drain.
+3. If hypothesis 2 — a single `daemon-reload` call after all unit-file
+   rewrites in a sequence; or insert a short sleep between rewrites.
+4. If hypothesis 3 — bisect llama-server back to a working SHA.
+
+### Acceptance
+- `mai-ui-8b → ui-venus-1.5-30b-a3b → bu-30b-a3b-preview → holo3-35b-a3b`
+  back-to-back swap sequence completes 4-of-4 cleanly.
+- Phase 19a re-measurement (post-Priority 1) can run on all 5 models,
+  not 3.
+
+### Don't
+- Don't manually pre-warm models in a different order to mask the
+  issue. The swap script is a shared operational tool; we want it
+  working in the real ordering.
+
+---
+
 ## S-2 — Reverse proxy + auth (off-frontier; only if needed)
 **Effort: m · Priority: S · Trigger: only when exposing beyond `192.168.0.0/24`**
 

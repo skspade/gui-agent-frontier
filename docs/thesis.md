@@ -85,23 +85,27 @@ parameters carrying more of the load, simpler harness.
 
 ## Frontier as currently known (2026-04-30)
 
-Cells filled from Phase 2 → Phase 17. n is per-cell sample size; cells
-without explicit n=… are n=1.
+Cells filled from Phase 2 → Phase 19. n is per-cell sample size; cells
+without explicit n=… are n=1. Phase 19 introduced a different scorer
+(end-to-end PASS/FAIL) than Phase 16 (strict-checkpoint count) — Phase 19
+rows are marked `e2e` to make the scorer explicit.
 
 | Class | Model | Harness | Result | Source |
 |---|---|---|---|---|
 | A | UI-Venus 8B Q6_K | (1,1,1,1) | PASS in 22 steps | Phase 2 |
-| B | UI-Venus 8B Q6_K | (1,1,1,1) | 4/9 strict | Phase 16 |
-| B | MAI-UI 8B Q6_K | (1,1,1,1) | 6/9 strict; 2/3 success-page (n=3) | Phase 16, 17-fu |
-| B | UI-Venus 30B-A3B Q3_K_M | (1,1,1,1) | 5/9 strict | Phase 16 |
-| B | Holo3 35B-A3B IQ3_XXS | (1,1,1,1) | 3/9 strict | Phase 16 |
-| B | bu-30b-a3b-preview Q3_K_M | (1,1,1,1) | 2/9 strict | Phase 16 |
+| B | UI-Venus 8B Q6_K | (1,1,1,1) | 4/9 strict; 3/9 e2e (n=3) | Phase 16; **Phase 19** |
+| B | MAI-UI 8B Q6_K | (1,1,1,1) | 6/9 strict (n=1); 2/3 success-page (n=3); **0/9 e2e (n=3) — task-level loop** | Phase 16, 17-fu, **Phase 19** |
+| B | UI-Venus 30B-A3B Q3_K_M | (1,1,1,1) | 5/9 strict | Phase 16 (Phase 19 swap-failed; F-7) |
+| B | Holo3 35B-A3B IQ3_XXS | (1,1,1,1) | 3/9 strict; **4/9 e2e (n=3) — reverses cliff hyp #1** | Phase 16; **Phase 19** |
+| B | bu-30b-a3b-preview Q3_K_M | (1,1,1,1) | 2/9 strict | Phase 16 (Phase 19 swap-failed; F-7) |
 | C-drag | UI-Venus 8B Q6_K | (1,1,1,1) | PASS in 4 steps | Phase 9 |
 | C-drag | UI-Venus 8B Q6_K | (2,1,1,1) | PASS in 3 steps / 24s | Phase 11 |
 | C-drag | MAI-UI 8B Q6_K | (1,1,1,1) | PASS in 3 steps | Phase 17 |
 | C-toolbar | UI-Venus 8B Q6_K | (1,1,1,1) | PASS, clean (12/13 icons) | Phase 3 |
 | C-toolbar | MAI-UI 8B Q6_K | (1,1,1,1) | PARTIAL (loop pathology, 30 steps) | Phase 17 |
-| D | (any) | (1,1,1,1) | unknown — smokes added 2026-04-30 | Phase 18 (planned) |
+| D | UI-Venus 8B Q6_K | (1,1,1,1) | 5/9 e2e (n=3, ikea+bestbuy) — bestbuy_airpods 0/3 | **Phase 19** |
+| D | MAI-UI 8B Q6_K | (1,1,1,1) | 0/9 e2e (n=3, ikea+bestbuy) — task-level loop | **Phase 19** |
+| D | Holo3 35B-A3B IQ3_XXS | (1,1,1,1) | 6/9 e2e (n=3, ikea+bestbuy) — bestbuy_airpods 1/3 | **Phase 19** |
 
 ---
 

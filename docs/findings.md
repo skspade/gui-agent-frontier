@@ -2653,3 +2653,258 @@ F-6 (convention fix for direction keyword scrolls).
 - 30B-A3B's hang is reproducible (2/2) and is filed separately — it
   did not influence the harness fixes in this phase, but it does
   block the 5×3 D-class bake-off (E-7).
+
+---
+
+## 2026-04-30 — Phase 19: Post-F6 baseline (5 models × 5 cart sites × n=3)
+
+### Scope
+
+Baseline measurement before Priority 1 (cart-state verification) lands.
+Goal: a clean frontier-sketch on the post-F6 dispatcher (commit `853d26a`)
+so subsequent improvements attribute to the cart-state probe rather than
+to confounded harness state. Plan: 5 models × 5 cart smokes × n=3 = 75 runs.
+
+Actual: **45 of 75 runs landed.** Two model swaps failed at start
+(`ui-venus-1.5-30b-a3b` and `bu-30b-a3b-preview`); see "Operational
+issues" below. The 3 successful models give clean cells for
+UI-Venus-1.5-8B, MAI-UI-8B, and Holo3-35B-A3B.
+
+### Baseline pass rates (n=3)
+
+| Model | Task | PASS | Categories |
+|---|---|---|---|
+| `ui-venus-1.5-8b` | saucedemo_backpack_only | 3/3 | pass:3 |
+| `ui-venus-1.5-8b` | saucedemo_full_checkout | 0/3 | stuck_loop:3 |
+| `ui-venus-1.5-8b` | ikea_search_add | 2/3 | pass:2, exhausted:1 |
+| `ui-venus-1.5-8b` | ikea_billy | 3/3 | pass:3 |
+| `ui-venus-1.5-8b` | bestbuy_airpods | 0/3 | exhausted:3 |
+| `mai-ui-8b` | saucedemo_backpack_only | 0/3 | exhausted:3 |
+| `mai-ui-8b` | saucedemo_full_checkout | 0/3 | exhausted:2, stuck_loop:1 |
+| `mai-ui-8b` | ikea_search_add | 0/3 | exhausted:2, stuck_loop:1 |
+| `mai-ui-8b` | ikea_billy | 0/3 | stuck_loop:2, exhausted:1 |
+| `mai-ui-8b` | bestbuy_airpods | 0/3 | stuck_loop:3 |
+| `holo3-35b-a3b` | saucedemo_backpack_only | 3/3 | pass:3 |
+| `holo3-35b-a3b` | saucedemo_full_checkout | 1/3 | stuck_loop:2, pass:1 |
+| `holo3-35b-a3b` | ikea_search_add | 3/3 | pass:3 |
+| `holo3-35b-a3b` | ikea_billy | 2/3 | pass:2, stuck_loop:1 |
+| `holo3-35b-a3b` | bestbuy_airpods | 1/3 | unhandled_action:1, exhausted:1, pass:1 |
+
+**Aggregate by model:**
+- `holo3-35b-a3b`: **10/15 = 67%** (mean 202.6s/run; min 53s; max 579s)
+- `ui-venus-1.5-8b`: **8/15 = 53%** (mean 71.0s/run; min 19s; max 173s)
+- `mai-ui-8b`: **0/15 = 0%** (mean 77.5s/run; min 27s; max 199s)
+
+**Aggregate by task:**
+- saucedemo_backpack_only: 6/9 = 67%
+- ikea_billy: 5/9 = 56%
+- ikea_search_add: 5/9 = 56%
+- saucedemo_full_checkout: 1/9 = 11%
+- bestbuy_airpods: 1/9 = 11%
+
+### Critical finding 1: MAI-UI's 0/15 is a task-level-loop pathology, NOT a model regression
+
+Phase 17 had MAI-UI-8B at 6/9 strict on `saucedemo_full_checkout` (n=1).
+Phase 19 has MAI-UI-8B at **0/15 across all 5 cart tasks** — a five-tier
+collapse that's not noise.
+
+Reading the per-step logs makes the pattern unambiguous: on the simple
+`saucedemo_backpack_only` task, MAI-UI **adds the backpack to the cart
+on step 5** (genuine task completion!) and then keeps going — clicking
+through cart→remove→burger menu→inventory→add-again→cart→remove→…
+4-cycle loop until step 25 hits MAX_STEPS:
+
+```
+[step  5] click → Add to cart on backpack — succeeds
+[step  6] click → cart icon  → cart opens
+[step  7] click → remove from cart  → cart empties
+[step  8] click → burger menu opens
+[step  9] click → back to inventory
+[step 10] click → Add to cart on backpack — repeat
+[step 11] click → cart icon
+[step 12] click → remove
+[step 13] click → burger menu
+... 4× same loop ... → MAX_STEPS at step 25
+```
+
+**Crucially: every action in this loop produces a real page change** —
+cart updates, page navigates, menu opens — so the existing 5-no-effect
+stuck-loop detector at `scripts/custom_agent.py:184-201` never fires.
+The model isn't stuck on a frozen page; it's *task-stuck*: cycling
+through actions that each succeed individually but compound into
+backwards-progress at the goal level.
+
+This is exactly the failure mode Priority 1 (cart-state verification) is
+designed to fix. With cart-state injected into the prompt, after step 5
+the model would see `cart=1, items: sauce-labs-backpack — task complete`
+and have a strong signal to emit `Finished()`. **Priority 1 should
+therefore lift MAI-UI 8B from 0% toward whatever its cap is on Class B
+once self-termination signals are present.**
+
+It also identifies a gap the existing loop-detector can't close —
+"action has effect, but task-level progress is regressing." A future
+extension would be to track **distinct URLs visited** and/or **cart-state
+hashes** across the last N steps; if neither advances, that's a
+task-level loop. Filed for after Phase 1 measurement (don't preempt
+Priority 1's expected impact).
+
+### Critical finding 2: Holo3-35B-A3B beats UI-Venus-1.5-8B at the same (1,1,1,1) harness
+
+Thesis cliff hypothesis #1 (`docs/thesis.md:108-115`) was: *"UI-Venus 8B
+beats Holo3 35B on B at the same harness; the cost of clearing C
+reproducibly across models is wider than the spread of model sizes we
+have on B."* Phase 16 supported this: UI-Venus 4/9 strict beat Holo3 3/9
+strict on `saucedemo_full_checkout`.
+
+Phase 19 reverses the verdict at n=3 across all 5 cart tasks: Holo3
+67% > UI-Venus 53%. The reversal is broad — Holo3 wins or ties on every
+task except `ikea_billy` (where Holo3 is 2/3 vs UI-Venus 3/3) and
+`saucedemo_full_checkout` (where Holo3 is 1/3 vs UI-Venus 0/3, both poor).
+
+Two interpretations to test:
+1. **Phase 16's n=1 strict-checkpoint score under-credited Holo3.** Holo3
+   completes the task end-to-end at higher rates but hits fewer
+   intermediate strict checkpoints (e.g. its scroll trajectory is less
+   precise but its final-state success is higher). The Phase 19 PASS/FAIL
+   scoring is end-to-end-only and shows the bigger picture.
+2. **The post-F6 dispatcher disproportionately favors Holo3.** F-6's
+   sign-flip + retry helps any model that mis-emits direction-keywords;
+   Holo3 emits direction more often than UI-Venus does (both per Phase
+   16 traces). So the F-6 fix may have shifted the harness toward
+   Holo3's emission style.
+
+Both interpretations are testable: (a) re-score Phase 16 trajectories
+end-to-end; (b) count `[scroll-fallback]` log occurrences per Phase 19
+trajectory. **Out of scope for this baseline write-up;** the Pareto
+frontier table in `docs/thesis.md` is updated below to reflect the new
+n=3 numbers, with an explicit note that the Phase 16 row used a different
+scorer.
+
+### Critical finding 3: bestbuy_airpods (Class D, overlay-heavy) and saucedemo_full_checkout (Class B, long-horizon) both bind hard
+
+Both at 1/9 = 11% pass rate across all 3 models. Different reasons:
+
+- **bestbuy_airpods**: 4 of 9 runs `exhausted` (max_steps), 1
+  `unhandled_action`, 1 `stuck_loop`, 3 PASS-eligible runs (only 1
+  actual pass). The Best Buy ad-overlay storm is the suspect: every
+  model that exhausts on this task does so deep in the page, often
+  re-clicking phantom Add-to-Cart targets at the bottom of the viewport
+  (cart-icon variant ID-2 instead of the in-PDP button). This is cliff
+  hypothesis #4 from `docs/thesis.md` ("D will look like B but with
+  overlay-dismissal as the new precision wall") confirmed at n=3:
+  Class D's overlay-cliff is real and the dispatcher alone doesn't close
+  it.
+
+- **saucedemo_full_checkout**: 6 of 9 runs `stuck_loop` (MAI-UI included,
+  which loops in task-state space rather than no-effect space). The
+  9-checkpoint task structure (login → sort → add 3rd-cheapest → add
+  backpack → cart → remove 3rd-cheapest → checkout fields → finish)
+  exceeds every model's planning horizon at this harness profile.
+  Holo3's 1/3 here vs 3/3 on `saucedemo_backpack_only` is the cleanest
+  "ordinal reasoning + state retention" signal in the table.
+
+### Operational issues
+
+**Two model swaps failed at start (F-7, new):**
+
+`ui-venus-1.5-30b-a3b` and `bu-30b-a3b-preview` both failed swap-in at
+exactly 14:49:08 (immediately after `mai-ui-8b` finished).
+`holo3-35b-a3b` swapped successfully at the same instant.
+
+```
+=== swap to ui-venus-1.5-30b-a3b: 2026-04-30T14:49:08-04:00 ===
+!!! swap failed for ui-venus-1.5-30b-a3b; skipping
+=== swap to bu-30b-a3b-preview: 2026-04-30T14:49:08-04:00 ===
+!!! swap failed for bu-30b-a3b-preview; skipping
+=== swap to holo3-35b-a3b: 2026-04-30T14:49:08-04:00 ===
+ready after 7s on holo3-35b-a3b IQ3_XXS
+```
+
+Files for both failed-to-swap models are present and readable
+(`ls /mnt/data/models/{ui-venus-1.5-30b-a3b,bu-30b-a3b-preview}/`
+returns the GGUF + mmproj). Hypotheses (untested):
+
+1. **VRAM not fully released after MAI-UI-8B unload.** A 14GB MoE model
+   needs the full VRAM budget; if mai-ui-8b's KV cache or mmproj wasn't
+   freed, the new server fails to start and the systemd unit returns
+   non-zero. holo3-35b-a3b tried 7s later (after the script's
+   wait-for-health timeout) and succeeded — implying the issue resolves
+   itself with time.
+2. **`swap_model.sh` race condition with `daemon-reload` between
+   back-to-back unit-file rewrites.** Three rewrites in the same second
+   could leave systemd in an inconsistent state that the third call
+   recovers from.
+3. **30B-A3B-Q3_K_M-specific load issue under the current llama.cpp
+   build.** Less likely (Phase 13 ran these models cleanly), but the
+   2026-04-29 dispatcher changes did rebuild llama-server.
+
+**Filed as F-7 in `docs/backlog.md`. Not in the critical path** —
+Phase 19 baseline + Phase 19a re-measurement complete on the 3 working
+models. F-7 only matters when filling the 30B-A3B / bu-30b-a3b cells.
+
+### Filled cells (for `docs/thesis.md`)
+
+| Class | Harness | Model | Phase 19 n=3 | Notes |
+|---|---|---|---|---|
+| B | (1,1,1,1) | UI-Venus 1.5 8B Q6_K | 3/9 (saucedemo, end-to-end) | post-F6; reframes Phase 16's strict-checkpoint score |
+| B | (1,1,1,1) | MAI-UI 1.5 8B Q6_K | 0/9 (saucedemo, end-to-end) | task-level-loop pathology — see Critical finding 1 |
+| B | (1,1,1,1) | Holo3 35B-A3B IQ3_XXS | 4/9 (saucedemo, end-to-end) | reverses cliff hyp. #1; see Critical finding 2 |
+| D | (1,1,1,1) | UI-Venus 1.5 8B Q6_K | 5/9 (ikea+bestbuy) | bestbuy_airpods 0/3 (overlay cliff) |
+| D | (1,1,1,1) | MAI-UI 1.5 8B Q6_K | 0/9 (ikea+bestbuy) | task-level-loop pathology |
+| D | (1,1,1,1) | Holo3 35B-A3B IQ3_XXS | 6/9 (ikea+bestbuy) | bestbuy_airpods 1/3 |
+
+### What this baseline tells us about Priority 1 (cart-state probe)
+
+The strongest expected impact from cart-state injection is on
+**MAI-UI's task-level-loop pathology** (Critical finding 1). UI-Venus's
+failure modes are different (precision walls, overlay handling), so
+cart-state injection should be neutral-to-mildly-positive there. Holo3
+is the weakest signal — already at 67%, with most failures being
+mid-task exhaustion that cart-state alone won't fix.
+
+Predicted post-Priority-1 baseline shifts:
+- MAI-UI: **0% → 40-60%** on tasks where cart-state-after-action gives
+  a clear "task complete" signal (saucedemo_backpack_only,
+  ikea_search_add, ikea_billy, bestbuy_airpods). Long-horizon
+  saucedemo_full_checkout will not benefit because cart-state alone
+  doesn't tell the model "now sort by price and pick the third item" —
+  that's multi-step planning.
+- UI-Venus: **53% → 60-65%** if cart-state catches a few of the
+  exhausted/stuck_loop cases on ikea_search_add and bestbuy_airpods.
+  Modest because UI-Venus already self-terminates well on the cart-add
+  patterns it succeeds at.
+- Holo3: **67% → 70%** at most. Holo3 already terminates correctly when
+  the task is done; cart-state injection is mostly redundant signal.
+
+If MAI-UI does NOT improve substantially after Priority 1, the
+task-level-loop hypothesis is wrong and the model is failing for a
+different reason (e.g. the toolcall harness path mis-handling MAI-UI's
+emission, or genuine planning collapse). That would refocus Phase 1+
+work on the harness rather than on cart-state instrumentation.
+
+### Operator-facing changes
+
+- `data/runs.jsonl`: 47 rows (45 baseline + 2 pre-baseline smoke rows).
+  Untracked (per-machine artifact); Task 0.4 deliberately excluded it
+  from the master plan's commit list so we don't pollute git with run
+  output.
+- `data/baseline_logs/`: 45 per-run text logs. Same story.
+- `data/screenshots/baseline/`: 45 final-state PNGs. Same.
+- New backlog item: **F-7 — investigate 30B-A3B + bu-30b-a3b-preview
+  swap failures.** Filed in `docs/backlog.md`.
+
+### Caveats
+
+- 3 of 5 models only. F-7 blocks the 30B-A3B and bu-30b-a3b cells.
+- n=3 is Tier-2 (frontier sketch). Tier-1 (n≥10, ≥95% pass) not
+  attempted in Phase 19.
+- The MAI-UI 0/15 result is *real* but the underlying mechanism (task-
+  level loop) is a hypothesis that Phase 1 measurement will test
+  directly. If it's wrong, the right fix is different from cart-state
+  injection.
+- Holo3's wide elapsed-s spread (53s–579s) suggests its per-step latency
+  is highly task-dependent. The slow runs (~6 min) on `bestbuy_airpods`
+  and `saucedemo_full_checkout` need closer inspection — could be model
+  thinking longer per step on overlay-heavy / long-horizon pages, or
+  could be CDP/page interactions that slow under 35B-class context.
+  Out of scope here.
