@@ -1928,6 +1928,181 @@ failure was magnified by the silent-drop bug.
 
 ---
 
+## 2026-04-30 — Per-model harness paths (backlog E-5)
+
+### TL;DR
+The 4 models that scored 0/9 in the Phase 14 follow-up bake-off
+(`mai-ui-8b`, `holo2-30b-a3b`, `bu-30b-a3b-preview`, `holo1.5-7b`)
+were failing on protocol mismatch, not capability. Added two new
+harness paths (`holo1_5` and `toolcall`) plus a `MODEL→HARNESS`
+registry; each of the 4 now executes a click that lands inside the
+saucedemo username field on a single-step probe. Phase 14 finding #2
+("4 of 6 candidates can't be evaluated with the UI-Venus prompt") is
+resolved.
+
+This entry also documents an unexpected per-model coord-space split
+inside the surfer-h-cli family: Holo1.5-7B follows the canonical
+"absolute pixels in resized image" contract; Holo2-30B-A3B emits
+0-1000 normalized like Holo3 / UI-Venus. Phase 15 finding #1's
+warning ("docstring lies and the contract is per-checkpoint") now
+has a second confirming data point.
+
+### Setup
+- New file `scripts/custom_agent/__init__.py` holds
+  `MODEL_HARNESS_REGISTRY` and `harness_for(model, override)`. Both
+  the run loop (`scripts/custom_agent.py`) and the probe
+  (`scripts/model_probe.py`) consume the registry through this single
+  helper.
+- New file `scripts/custom_agent/holo1_5.py`: surfer-h-cli navigator +
+  localizer for Holo1.5-7B. Reuses the `holo3.py` schemas, prompts,
+  and image helpers; differs only in the localizer image (sent at
+  smart_resize'd dims) and the coord rescale (`x * viewport_w /
+  resized_w`, the canonical surfer-h-cli contract — Contract A).
+- New file `scripts/custom_agent/toolcall.py`: Hermes-style tool-call
+  emitter. Defines a 6-tool action set (click / type / scroll /
+  press_enter / wait / done), passes it through OpenAI-shaped `tools`
+  + `tool_choice="required"`, and consumes `message.tool_calls`.
+  Llama-server's `--jinja` rendering does the heavy lifting (XML
+  tool-call extraction).
+- New file `scripts/model_probe.py`: single-step regression probe.
+  Launches saucedemo, calls the harness's navigate_step, applies the
+  same `grounding_remap` the dispatcher uses, reports
+  raw / effective xy + nearest ground-truth box + inside/outside.
+  Exit 0 if the click landed inside the username field, else 1.
+- `scripts/custom_agent.py` now selects harness via
+  `harness_for(MODEL, HARNESS_override)` instead of a hardcoded
+  binary string check. `HARNESS=` env still wins so cross-protocol
+  experiments stay possible.
+
+### Per-model probe results (n=1, saucedemo login, "click on the Username input field")
+
+| Model | Harness | Raw xy | Effective xy | Nearest GT | Inside username box? |
+|---|---|---|---|---|---|
+| ui-venus-1.5-8b | uivenus | (491, 286) [0-1000] | (605, 176) | user-name 12px | **PASS** |
+| holo1.5-7b (Q6_K) | holo1_5 | (523, 183) [viewport] | (523, 183) | user-name 94px | **PASS** |
+| holo2-30b-a3b (Q3_K_M) on holo1_5 path | holo1_5 | (479, 283) [misread] | (479, 283) | login-button 144px | **FAIL** — wrong contract |
+| holo2-30b-a3b (Q3_K_M) on holo3 path | holo3 | (604, 173) [0-1000] | (604, 173) | user-name 13px | **PASS** |
+| mai-ui-8b (Q6_K) on toolcall, click_at | toolcall | (401, 286) [misread] | (401, 286) | login-button 219px | **FAIL** — wrong contract |
+| mai-ui-8b (Q6_K) on toolcall, click | toolcall | (401, 288) [0-1000] | (494, 177) | user-name 123px | **PASS** |
+| bu-30b-a3b-preview (Q3_K_M) | toolcall | (400, 300) [0-1000] | (493, 184) | user-name 124px | **PASS** |
+
+All artifacts at `/tmp/probe_<alias>.log`. The two FAIL rows are
+documented above to capture the contract-mismatch detection — they
+were corrected by routing Holo2 to the `holo3` path and changing the
+toolcall path's action kind from `click_at` to `click` so the
+dispatcher's `grounding_remap` runs.
+
+### Findings (in order of importance)
+
+17. **Holo1.5-7B follows the surfer-h-cli docstring contract;
+    Holo2-30B-A3B does not.** Holo1.5-7B emits absolute pixels in the
+    smart_resize'd image space, exactly as the docstring says
+    ("number of pixels from the left edge"). Holo2-30B-A3B emits
+    0-1000 normalized despite identical schema and prompts. Holo3
+    does the same as Holo2 (Phase 15 finding #1). The H-Company
+    family broke from its own convention at Holo2 and never restored
+    it. **Operational rule: every new surfer-h-cli-shaped model needs
+    a single-step probe before it goes into the registry.** The probe
+    catches the contract in one screenshot.
+
+18. **Hermes/OpenAI tool-call models default to 0-1000 normalized
+    coords regardless of prompt instructions.** First toolcall.py
+    iteration described coordinates as "viewport CSS pixels" and
+    emitted `click_at` (no remap). MAI-UI emitted (401, 286) — well
+    off-target as viewport pixels but exactly correct interpreted as
+    0-1000 normalized. Updated tool descriptions + emit kind:
+    coordinates are "0-1000 normalized over viewport"; emit `click`
+    so the dispatcher's `grounding_remap` runs. bu-30b matched
+    immediately (no further iteration). Both are Qwen3-VL family;
+    the training distribution dominates the prompt.
+
+19. **`tool_choice="required"` + a 6-verb tool set was enough to
+    route MAI-UI / bu-30b away from their `<tool_call>` parse_error
+    failure mode.** Both models had previously failed at step 4 of
+    saucedemo because they fell through to native tool calling when
+    the UI-Venus prompt asked for a click action it didn't define.
+    Defining tools natively in the OpenAI request (and forcing
+    selection) puts them on a path llama-server's `--jinja` template
+    knows how to extract. No manual `<tool_call>` regex parsing
+    needed.
+
+20. **Tool descriptions matter for behavior, not just typing.**
+    Initial click tool description didn't warn against premature
+    `done` calls; the no-effect-prompt-warning lives in the UI-Venus
+    `model.step()` builder but not in toolcall.py's user template.
+    Added a single line ("If the previous action had no visible
+    effect, pick a different target — do NOT call the `done` tool
+    just because progress stalled.") in the user template instead of
+    the system prompt; per-step warnings beat once-at-the-top
+    warnings for instruction-tuned models. Whether this actually
+    suppresses the premature-done failure mode is untested at
+    multi-step depth — the single-step probe doesn't exercise it.
+
+21. **The dispatcher already supports the action kinds the new
+    paths emit.** `click`, `click_at`, `type`, `scroll`, `press_enter`,
+    `wait`, `done` are all handled (`scripts/custom_agent/actions.py`).
+    `refresh` and `restart` (surfer-h-cli verbs) fall through to
+    `NotImplementedError` — pre-existing gap, not introduced here.
+    Worth noting if a Holo run later emits one of those.
+
+### Caveats
+- **n=1 per model on a single page.** The probe verifies the wire
+  protocol (parser handles real output, coords land in the right
+  region) — it does NOT verify model competence at saucedemo's
+  long-horizon task. That's E-6's job.
+- **Coord-space contracts probed at one resolution.** All probes ran
+  at viewport 1233x615 with DPR=1. If a model's contract has a
+  scale-dependent factor (e.g. some models normalize differently for
+  HiDPI), the probe wouldn't catch it. Re-run if window size changes
+  significantly.
+- **Holo1.5-7B's coord precision was the worst of the four** (94px
+  from username center, only 12px inside the box). Acceptable for
+  large form inputs; risky for the small-target precision wall the
+  bake-off is going to expose. Worth re-running with Q8 quant if
+  Holo1.5 makes it past CP1 in E-6.
+- **No multi-step robustness test.** All four PASSes are single
+  click. The Phase 14 follow-up failure mode was step 4 (Login
+  submit) for MAI-UI / Holo2 / bu-30b — i.e. the second click after
+  two `type` actions. None of those second-click scenarios are
+  exercised in this probe; we'll catch those in E-6.
+
+### Operator-facing changes (active going forward)
+
+- `MODEL=<alias>` selects the harness automatically via the registry
+  in `scripts/custom_agent/__init__.py`. `HARNESS=` env override
+  still works. New aliases need a registry entry + a single-step
+  probe before they're trusted.
+- `scripts/model_probe.py` is the canonical single-step regression
+  probe. Run after model swaps:
+  ```
+  DISPLAY=:0 XAUTHORITY=/run/user/1000/xauth_rVYaGJ \
+    XDG_RUNTIME_DIR=/run/user/1000 \
+    PYTHONUNBUFFERED=1 MODEL=<alias> \
+    .venv/bin/python -u scripts/model_probe.py > /tmp/probe_<alias>.log 2>&1
+  ```
+  Exit 0 = click inside username box; non-zero = misroute or
+  contract mismatch.
+- `scripts/custom_agent/holo1_5.py` is the surfer-h-cli path for
+  models that follow the canonical "absolute pixels in resized image"
+  contract. Currently only Holo1.5-7B.
+- `scripts/custom_agent/toolcall.py` is the Hermes tool-call path.
+  Coord contract is 0-1000 normalized; emits `click` (not `click_at`)
+  so `grounding_remap` runs. Currently used by MAI-UI-8B and
+  bu-30b-a3b-preview.
+- Phase 14 follow-up's `parse_error` baseline for these 4 models is
+  now a lower bound — they should all reach the bake-off's actual
+  scoring layer in E-6.
+
+### Verdict
+
+E-5 acceptance is met: each of the 4 previously-broken models
+executes at least one click action successfully against the live
+llama-server, and a `harness_for(MODEL)` selector routes each model
+to its own prompt + parser without code changes per run. E-6
+(5-stack bake-off rerun on clean dispatcher) is now unblocked.
+
+---
+
 ## Open questions for retro
 1. ~~Are we leaving UI-Venus's grounding capability on the table by using
    browser-use? Worth a custom client for canvas-heavy use cases?~~
