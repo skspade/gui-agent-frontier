@@ -1469,6 +1469,148 @@ two follow-ups that apply to either harness:
 
 ---
 
+## 2026-04-29 — Phase 15: Holo3-35B-A3B native-harness eval
+
+### Setup
+Built a Holo3-native harness path in `scripts/custom_agent/holo3.py`,
+gated behind a new `HARNESS=holo3` env on the existing run loop. The
+default `HARNESS=uivenus` keeps the Phase 14 path intact. Harness shape
+is surfer-h-cli-style two-pass localize+navigate:
+- **Navigator** (temp 0.7) returns a discriminated-union JSON via OpenAI
+  strict `response_format={"type":"json_schema",...,"strict":true}`. The
+  union is the verbatim 8-action surfer-h-cli set
+  (`click_element`, `write_element`, `scroll`, `go_back`, `refresh`,
+  `wait`, `restart`, `answer`). Reasoning lives in a top-level `thought`
+  string field of the schema, not in a `<think>` tag — they're mutually
+  exclusive at sampling time with strict JSON.
+- **Localizer** (temp 0.0) returns a `ClickAbsoluteAction` JSON with
+  `(x, y)`. Called whenever the navigator emits `click_element` /
+  `write_element` (those carry an `element: <text>` description and
+  placeholder x/y; the localizer fills in the real coords).
+- Schemas, prompts, and `smart_resize` are all verbatim ports of
+  `hcompai/surfer-h-cli/src/surfer_h_cli/skills/{navigation_step,
+  navigation_models, localization_1_5}.py` and `utils.py`. The
+  navigation prompt drops one line (`Never try to login...`) which
+  would block saucedemo CP1.
+
+Holo3-35B-A3B at `i1-IQ3_XXS` (13.62GB) + mmproj-Q8_0 (0.6GB). Fits
+16GB VRAM with 32K KV. `swap_model.sh` registry entry + idempotent
+`--chat-template-kwargs '{"enable_thinking":false}'` injection (Holo3's
+chat template auto-prepends a `<think>` block which conflicts with
+strict response_format; the kwarg is no-op for templates that don't
+reference `enable_thinking`).
+
+### Result
+**Holo3-35B-A3B IQ3_XXS scored 1/9 strict and 1/9 lenient on
+saucedemo_full_checkout (n=1).**
+
+| Model | Strict | Lenient | Notes |
+|---|---|---|---|
+| ui-venus-1.5-8b (Phase 14, original baseline) | 2/9 | 4/9 | "good day" — model emitted `Type('p')` after dropdown click, triggered native letter-jump |
+| ui-venus-1.5-8b (Phase 15 re-run, post-DPR=1) | 1/9 | 1/9 | "stuck day" — model perseverated on dropdown clicks, never tried Type |
+| holo3-35b-a3b (Phase 15) | 1/9 | 1/9 | Cleared CP1 cleanly; stuck on the same dropdown wall |
+
+Holo3 successfully filled username + password and submitted login (CP1).
+On the inventory page it identified the sort dropdown as the next target
+but the localizer predicted y≈89 against ground-truth y≈49 — landing in
+the first product image area, not the dropdown. 5 consecutive
+no-effect clicks tripped the stuck_loop early-out at step 11 (97s).
+
+UI-Venus 8B re-run for fair comparison (the harness instrumentation has
+changed since Phase 14 baseline). It also reached CP1 cleanly but stuck
+on the same dropdown — its "good day" Phase 14 score of 2/9 was a
+stochastic artifact of the model emitting a follow-up `Type` after the
+dropdown click, which fires native `<select>` letter-jump. That branch
+didn't happen this run.
+
+**Verdict: Holo3 does not clear the bar (strict ≥3/9 OR lenient ≥5/9).
+No-go on this lineage at IQ3_XXS for long-horizon tasks.**
+
+### Findings (in order of importance)
+
+1. **Holo3-35B-A3B IQ3_XXS does NOT use surfer-h-cli's Holo1.5 localizer
+   contract.** It emits coords in **[0, 1000] × [0, 1000] normalized
+   space**, the same convention as UI-Venus, ignoring the schema's
+   "number of pixels from the left edge" docstring. Verified by a
+   calibration probe (`scripts/holo3_calibrate.py`): 0/4 targets
+   landed in-box with the canonical "absolute pixels in resized image"
+   contract; 4/4 in-box once we treat output as 0-1000 normalized and
+   rescale by viewport. **Re-run that probe before adding any new
+   localizer-style model — the docstring lies and the contract is
+   per-checkpoint.**
+
+2. **The browser was running at DPR ~2.5x.** CDP `Page.captureScreenshot`
+   defaults to device pixels, so screenshots were 3120×1538 against
+   a 1233×615 viewport. UI-Venus dodged this entirely (its 0-1000
+   normalized output is DPR-independent). Any model emitting absolute
+   pixel coords needs DPR=1; pinned `--force-device-scale-factor=1`
+   into `launch_chromium` so screenshot dims == viewport CSS dims.
+
+3. **Action.kind needs to record the coord-space convention, not just
+   the verb.** First R1 attempt looked like "Holo3 stuck on Login",
+   but actually the dispatcher was double-remapping Holo3's already-
+   viewport-pixel click coords through `grounding_remap`, sending the
+   click 50-200px off-target. Fix: introduced `click_at` and
+   `click_then_type` kinds (both bypass remap) parallel to the existing
+   `click` kind (UI-Venus, applies remap). Without this, login was
+   structurally impossible — the comparison would've been unfair.
+
+4. **Strict `response_format` and `<think>` chat templates are mutually
+   exclusive.** llama-server's `--chat-template-kwargs '{"enable_thinking":
+   false}'` is required when the chat template auto-prepends a `<think>`
+   block (Holo3, Qwen3-VL family) AND we pin output to a strict JSON
+   schema. Without it, the schema fails to parse the partial
+   `<think>...</think>` prefix. Reasoning is preserved by routing it
+   into a top-level `thought` string field of the schema (the
+   surfer-h-cli design pattern, not a workaround).
+
+5. **`extra_body={"structured_outputs":...}` is silently ignored by
+   llama-server (vLLM-only).** Use OpenAI-standard
+   `response_format={"type":"json_schema","json_schema":{...,"strict":true}}`.
+   Verified live during planning probe.
+
+6. **The saucedemo `<select>` dropdown is structurally hostile to both
+   models.** Native `<select>` opens an OS-level popup that CDP can't
+   simulate; the only path through is the per-character keydown event
+   triggering the browser's native letter-jump, but only if the model
+   emits a `Type('p')` after clicking the dropdown. Phase 14 saw this
+   land once for UI-Venus; this Phase 15 re-run didn't repro. CP2 is a
+   stochastic checkpoint, not a deterministic one. Reaching it more
+   reliably would require either prompting in the system message, or a
+   deterministic "click_dropdown_option" affordance in the action set.
+
+### Caveats
+
+- n=1, navigator temp=0.7 → meaningful run-to-run variance for Holo3.
+- IQ3_XXS may degrade the localizer head specifically. Q3_K_M (16.76GB)
+  would OOM with mmproj+KV; testing higher quants would require
+  unloading mmproj or dropping context.
+- Documented Holo3-35B vs Holo3-122B-API gap of 10-15pp on practical
+  tasks. The 1/9 here is consistent with that gap on top of an already-
+  hard saucedemo task.
+- The viewport at 1280×800 has the form ~y=150-350; saucedemo's
+  presentation contributes to the difficulty but the dropdown miss
+  (y=89 vs y=49) is well outside any reasonable tolerance.
+
+### Operator-facing changes
+
+- `HARNESS=holo3` env routes the run loop through the Holo3 native
+  path in `scripts/custom_agent/holo3.py`. Default remains `uivenus`.
+- `MODEL=holo3-35b-a3b` + `swap_model.sh holo3-35b-a3b` switches the
+  llama-server to Holo3 with the `--chat-template-kwargs` flag.
+- `--force-device-scale-factor=1` is now permanent in `launch_chromium`.
+  UI-Venus runs are unaffected by the coord pipeline; visual rendering
+  may differ slightly on HiDPI displays.
+- Calibration probe at `scripts/holo3_calibrate.py` — re-run before
+  adding any new localizer-style model. Single-source-of-truth for the
+  "what coord space does this model emit?" question.
+- Per-run R1 artifacts archived as
+  `/tmp/r1_artifacts/holo3-35b-a3b.holo3.{log,steps,final.png}` and
+  `/tmp/r1_artifacts/ui-venus-1.5-8b.posthead.{log,steps,final.png}`
+  for the comparison.
+
+---
+
 ## Open questions for retro
 1. ~~Are we leaving UI-Venus's grounding capability on the table by using
    browser-use? Worth a custom client for canvas-heavy use cases?~~
