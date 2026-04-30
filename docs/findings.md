@@ -2822,25 +2822,43 @@ ready after 7s on holo3-35b-a3b IQ3_XXS
 
 Files for both failed-to-swap models are present and readable
 (`ls /mnt/data/models/{ui-venus-1.5-30b-a3b,bu-30b-a3b-preview}/`
-returns the GGUF + mmproj). Hypotheses (untested):
+returns the GGUF + mmproj). Originally filed three hypotheses
+(VRAM-not-freed / daemon-reload race / Q3_K_M-specific load issue);
+**all three were wrong.**
 
-1. **VRAM not fully released after MAI-UI-8B unload.** A 14GB MoE model
-   needs the full VRAM budget; if mai-ui-8b's KV cache or mmproj wasn't
-   freed, the new server fails to start and the systemd unit returns
-   non-zero. holo3-35b-a3b tried 7s later (after the script's
-   wait-for-health timeout) and succeeded — implying the issue resolves
-   itself with time.
-2. **`swap_model.sh` race condition with `daemon-reload` between
-   back-to-back unit-file rewrites.** Three rewrites in the same second
-   could leave systemd in an inconsistent state that the third call
-   recovers from.
-3. **30B-A3B-Q3_K_M-specific load issue under the current llama.cpp
-   build.** Less likely (Phase 13 ran these models cleanly), but the
-   2026-04-29 dispatcher changes did rebuild llama-server.
+**Resolved 2026-04-30 (commit `239266b`).** Root cause: `swap_model.sh`
+defaults `QUANT="${2:-Q6_K}"` script-wide, but the 30B-A3B-class models
+don't ship a Q6_K quant — only Q3_K_M. The Phase 19 baseline runner
+called `swap_model.sh "$model"` with no second arg, so the script tried
+to open `ui-venus-1.5-30b-a3b-Q6_K.gguf` (and the bu-30b-a3b-preview
+equivalent), hit the file-existence check at `[[ ! -f "$GGUF" ]]`, and
+exited 1 in <100ms — never touching systemd, never racing with VRAM
+unload. The "same instant 14:49:08" pattern fits because the script
+bails fast: two file-not-found exits + one successful systemd swap can
+all complete in the same wall-clock second.
 
-**Filed as F-7 in `docs/backlog.md`. Not in the critical path** —
-Phase 19 baseline + Phase 19a re-measurement complete on the 3 working
-models. F-7 only matters when filling the 30B-A3B / bu-30b-a3b cells.
+Holo3 succeeded at the same instant only because its case in the script
+already had a per-model default override (`QUANT="${2:-IQ3_XXS}"`) —
+the 30B-A3B and bu-30b-a3b cases lacked that pattern.
+
+Verified by reproducing the exact failing transition post-fix:
+`mai-ui-8b → ui-venus-1.5-30b-a3b` back-to-back with no quant args now
+succeeds (8s wall-clock). Phase 13 also ran cleanly because the Phase
+13 invocation happened to pass explicit `Q3_K_M`.
+
+**Lesson learned:** the diagnosis instinct ("VRAM race / systemd race /
+loader bug") came from the *symptom* (concurrent failure → success).
+The *script's exit code path* was the actual evidence channel. A
+30-second `journalctl -u vision-model.service --since` against a
+reproduction run showed zero entries — meaning the script never reached
+systemd, which would have ruled out the runtime hypotheses immediately.
+Worth the principle entry in `CLAUDE.md`'s debugging rules: **before
+hypothesizing about runtime behavior, check whether the script even
+got that far.**
+
+The 30B-A3B and bu-30b-a3b cells are now unblocked. Phase 19b — running
+the 10 missing baseline + re-measurement cells on the now-working
+swap path — is filed as a follow-up below.
 
 ### Filled cells (for `docs/thesis.md`)
 
