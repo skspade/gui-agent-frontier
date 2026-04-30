@@ -223,6 +223,7 @@ async def run(task_module) -> None:
             "task_class": getattr(task_module, "TASK_CLASS", None),
             "model": os.environ.get("MODEL", "ui-venus-1.5-8b"),
             "harness": HARNESS,
+            "phase": os.environ.get("PHASE", "untagged"),
             "outcome": outcome,
             "category": classify_failure(outcome=outcome, steps=len(history)),
             "steps": len(history),
