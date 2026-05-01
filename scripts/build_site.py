@@ -12,9 +12,13 @@ Writes:
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
+import shutil
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 
 PASS_OUTCOMES_FALLBACK = {"done", "call_user"}
@@ -102,3 +106,93 @@ def resolve_screenshots(
                     break
         resolved.append({"run": run, "src_path": shot_path})
     return resolved
+
+
+HTML_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Findings — vision-model</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main id="app"></main>
+<aside id="panel" hidden></aside>
+<div id="lightbox" hidden></div>
+<script type="application/json" id="app-data">__PAYLOAD__</script>
+<script src="app.js"></script>
+</body>
+</html>
+"""
+
+
+def _slug(s: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in s)
+
+
+def main(repo_root: Path | None = None) -> None:
+    repo_root = Path(repo_root) if repo_root else Path(__file__).resolve().parents[1]
+    runs_path = repo_root / "data" / "runs.jsonl"
+    sweeps_dir = repo_root / "data" / "sweeps"
+    web_dir = repo_root / "web"
+    config = yaml.safe_load((web_dir / "config.yaml").read_text())
+
+    runs: list[dict[str, Any]] = []
+    if runs_path.exists():
+        for line in runs_path.read_text().splitlines():
+            line = line.strip()
+            if line:
+                runs.append(json.loads(line))
+
+    sweep_index = build_sweep_index(sweeps_dir) if sweeps_dir.exists() else {}
+    cells = aggregate_cells(runs, config)
+
+    shots_root = web_dir / "screenshots"
+    if shots_root.exists():
+        shutil.rmtree(shots_root)
+
+    out_cells: list[dict[str, Any]] = []
+    for (model, test), cell in cells.items():
+        resolved = resolve_screenshots(cell, sweep_index)
+        runs_out: list[dict[str, Any]] = []
+        for i, item in enumerate(resolved):
+            run = item["run"]
+            shot_rel: str | None = None
+            if item["src_path"]:
+                dst = shots_root / _slug(model) / _slug(test) / f"{i}.png"
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(item["src_path"], dst)
+                shot_rel = f"screenshots/{_slug(model)}/{_slug(test)}/{i}.png"
+            runs_out.append({
+                "ts": run.get("ts"),
+                "outcome": run.get("outcome"),
+                "category": run.get("category"),
+                "steps": run.get("steps"),
+                "elapsed_s": run.get("elapsed_s"),
+                "harness": run.get("harness"),
+                "screenshot": shot_rel,
+            })
+        out_cells.append({
+            "model": model,
+            "test": test,
+            "k": cell["k"],
+            "n": cell["n"],
+            "runs": runs_out,
+        })
+
+    payload = {
+        "intro": config.get("intro", ""),
+        "class_labels": config.get("class_labels", {}),
+        "models": config["models"],
+        "tests": config["tests"],
+        "cells": out_cells,
+        "built_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+
+    html = HTML_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload))
+    (web_dir / "index.html").write_text(html)
+    print(f"Wrote {web_dir / 'index.html'} — {len(out_cells)} cells")
+
+
+if __name__ == "__main__":
+    main()
