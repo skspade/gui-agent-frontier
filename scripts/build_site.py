@@ -189,7 +189,10 @@ def main(repo_root: Path | None = None) -> None:
         "built_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     }
 
-    html = HTML_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload))
+    html = HTML_TEMPLATE.replace(
+        "__PAYLOAD__",
+        json.dumps(payload).replace("<", "\\u003c"),
+    )
     (web_dir / "index.html").write_text(html)
     print(f"Wrote {web_dir / 'index.html'} — {len(out_cells)} cells")
 
