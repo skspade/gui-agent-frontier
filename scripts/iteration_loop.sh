@@ -14,16 +14,34 @@ MAX=20
 BRANCH=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --max) MAX="$2"; shift 2;;
-        --branch) BRANCH="$2"; shift 2;;
+        --max)
+            [[ $# -ge 2 ]] || { echo "--max requires a value" >&2; exit 1; }
+            MAX="$2"; shift 2;;
+        --branch)
+            [[ $# -ge 2 ]] || { echo "--branch requires a value" >&2; exit 1; }
+            BRANCH="$2"; shift 2;;
         *) echo "unknown flag: $1" >&2; exit 1;;
     esac
 done
+
+if ! [[ "$MAX" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--max must be a positive integer; got: $MAX" >&2
+    exit 1
+fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 BRANCH="${BRANCH:-harness-loop/${TS}}"
 WORKTREE="${REPO_ROOT}/../vision-model-harness-loop-${TS}"
+
+cleanup() {
+    local rc=$?
+    if [[ -n "${WORKTREE:-}" && -d "$WORKTREE" && $rc -ne 0 ]]; then
+        echo "loop aborted (rc=$rc); worktree preserved at $WORKTREE for inspection" >&2
+        echo "to remove: git -C $REPO_ROOT worktree remove --force $WORKTREE && git -C $REPO_ROOT branch -D $BRANCH" >&2
+    fi
+}
+trap cleanup EXIT
 LEARNINGS="${WORKTREE}/learnings.md"
 REPORT="${WORKTREE}/reports/iteration_loop_${TS}.md"
 PROMPT_USER_TMPL="${REPO_ROOT}/prompts/loop_user.md.tmpl"
@@ -125,11 +143,36 @@ PY
     "${WORKTREE}/.venv/bin/python" -u "${WORKTREE}/scripts/regression_suite.py" --out "$AFTER"
     set -e
 
+    if [[ ! -s "$AFTER" ]]; then
+        echo "  AFTER snapshot missing or empty (suite wrapper crashed); logging and continuing" >&2
+        {
+            echo
+            echo "## Iteration $i — SUITE-ERROR"
+            echo
+            echo "**Outcome**: regression_suite.py did not produce a valid AFTER snapshot."
+            echo
+        } >> "$LEARNINGS"
+        continue
+    fi
+
     # Driver decides + commits or reverts
+    set +e
     "${WORKTREE}/.venv/bin/python" "${WORKTREE}/scripts/iteration_step.py" decide \
         --iteration "$i" \
         --before "$BEFORE" --after "$AFTER" --transcript "$TRANSCRIPT" \
         --learnings "$LEARNINGS" --workdir "$WORKTREE"
+    decide_rc=$?
+    set -e
+    if [[ $decide_rc -ne 0 ]]; then
+        echo "  iteration_step.py decide failed rc=$decide_rc; logging and continuing" >&2
+        {
+            echo
+            echo "## Iteration $i — DRIVER-ERROR (rc=$decide_rc)"
+            echo
+            echo "**Outcome**: iteration_step.py decide exited rc=$decide_rc; loop continued."
+            echo
+        } >> "$LEARNINGS"
+    fi
 done
 
 # Finalize report
