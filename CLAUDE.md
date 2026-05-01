@@ -342,6 +342,23 @@ A smoke module exposes module-level constants: `TASK` (required),
   `validate_harness.py` won't catch the SIGILL because it never gets
   far enough.
 
+## Harness regression suite & iteration loop
+
+`scripts/regression_suite.py` is the single entry point for verifying
+the custom CDP harness's invariants. It runs four pytest regression
+locks (quant default, coord-space convention, scroll clamp, iframe
+skip), the 9/9 mechanical CDP probe, and two E2E custom-agent runs
+(saucedemo full checkout, IKEA BILLY). JSON output to `--out` or stdout;
+exit 0 iff all green. `--unit-only` short-circuits the E2E + probe runs
+for fast contract checks.
+
+`scripts/iteration_loop.sh` runs an autonomous harness-hardening loop
+in a fresh worktree on `harness-loop/<ts>`, spawning one `claude --print`
+per iteration (Max subscription, restricted tool whitelist) and letting
+`scripts/iteration_step.py` decide commit-or-revert based on suite
+delta. Stops on two consecutive greens or after `--max` (default 20)
+iterations. Final report at `reports/iteration_loop_<ts>.md`.
+
 ## Stack reference (for setup repro)
 
 - CachyOS, AMD 9070 XT (gfx1201, RADV mesa)
