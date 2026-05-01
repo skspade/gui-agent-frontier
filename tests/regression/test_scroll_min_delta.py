@@ -79,3 +79,30 @@ def test_direction_only_uses_floor_magnitude():
     dy = wheel_calls[0].args[1]["deltaY"]
     assert abs(dy) == _MIN_SCROLL_DELTA
     assert dy < 0, f"direction='down' must produce negative deltaY (F-6 convention); got {dy}"
+
+
+def test_micro_span_clamped_regardless_of_floor():
+    """start=(500,500) → end=(500,520): post-remap dy ≈ 16px, smaller
+    than any reasonable floor. Catches clamp-branch removal even if
+    _MIN_SCROLL_DELTA is independently lowered.
+
+    Math: round(520/1000 * 800) - round(500/1000 * 800) = 416 - 400 = 16.
+    """
+    action = Action(kind="scroll", start_xy=(500, 500), end_xy=(500, 520),
+                    raw="scroll(start=(500,500),end=(500,520))")
+    page, send_raw = _make_page_with_dispatch_capture()
+    with patch("scripts.custom_agent.actions._input_probe", new=AsyncMock(return_value={"clicks": 0, "keys": 0, "url": "http://x"})), \
+         patch("scripts.custom_agent.actions._scroll_y", new=AsyncMock(return_value=0)), \
+         patch("scripts.custom_agent.actions._scroll_layout_probe", new=AsyncMock(return_value={"docH": 5000, "innerH": 800})):
+        _run(_scroll(page, action, VIEWPORT))
+    wheel_calls = [c for c in send_raw.await_args_list
+                   if c.args[0] == "Input.dispatchMouseEvent"
+                   and c.args[1].get("type") == "mouseWheel"]
+    assert wheel_calls, "expected at least one mouseWheel dispatch"
+    dy = wheel_calls[0].args[1]["deltaY"]
+    # Raw computed dy is ~16; this assertion only holds if the clamp
+    # branch executed.
+    assert abs(dy) >= _MIN_SCROLL_DELTA, (
+        f"micro-span dy={dy} not clamped — clamp branch likely removed."
+    )
+    assert dy > 0
