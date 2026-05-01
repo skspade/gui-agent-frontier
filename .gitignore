@@ -9,3 +9,6 @@ __pycache__/
 # Run-output artifacts (per-machine; never committed). Phase 19 baseline +
 # Phase 19a re-measurement live here. Schema documented in docs/findings.md.
 data/
+# Findings webapp — built artifacts (rebuild with scripts/build_site.py)
+web/index.html
+web/screenshots/

@@ -1,0 +1,72 @@
+# Hand-curated ordering for the findings webapp.
+# Models are listed in order of total parameter count (rows top→bottom).
+# Tests are grouped by class and ordered easy→hard within each class
+# (columns left→right).
+
+intro: |
+  The contribution is the boundary, not a single point. For each
+  task class, where does the (model, harness) cliff sit — where does
+  smaller-model-plus-smarter-harness stop working and you have to spend
+  parameters or API dollars? This page shows each model's cliff
+  side-by-side: rows are models ordered by parameter count, columns
+  are tests grouped by class A/B/C/D and ordered easy→hard within
+  each band.
+
+class_labels:
+  A: "Known-site DOM, short horizon"
+  B: "Known-site DOM, long horizon + grounding pinches"
+  C: "Visual grounding required (canvas / shadow-DOM)"
+  D: "Novel real-world e-commerce"
+
+models:
+  - id: ui-venus-1.5-8b
+    label: "UI-Venus 1.5 8B"
+    params: "8B"
+  - id: mai-ui-8b
+    label: "MAI-UI 8B"
+    params: "8B"
+  - id: ui-venus-1.5-30b-a3b
+    label: "UI-Venus 1.5 30B-A3B"
+    params: "30B (A3B)"
+  - id: bu-30b-a3b-preview
+    label: "bu-30B-A3B preview"
+    params: "30B (A3B)"
+  - id: holo3-35b-a3b
+    label: "Holo3 35B-A3B"
+    params: "35B (A3B)"
+  - id: qwen2.5-vl-72b-instruct
+    label: "Qwen 2.5-VL 72B"
+    params: "72B"
+
+tests:
+  A:
+    - id: saucedemo_headed
+      label: "saucedemo (headed)"
+      desc: "DOM-traversable, short horizon — baseline."
+  B:
+    - id: saucedemo_backpack_only
+      label: "saucedemo: backpack only"
+      desc: "Add one product to cart on a known DOM site."
+    - id: saucedemo_full_checkout
+      label: "saucedemo: full checkout"
+      desc: "20+ step DOM flow with cart-icon precision pinch."
+  C:
+    - id: excalidraw_drag
+      label: "excalidraw: drag rectangle"
+      desc: "Pure pixel-coord drag on a canvas."
+    - id: excalidraw_drag_v2
+      label: "excalidraw: drag (v2, no Escape)"
+      desc: "Phase 22 variant — no post-drag keyboard input."
+    - id: excalidraw_toolbar
+      label: "excalidraw: toolbar walk"
+      desc: "Identify and click each toolbar icon visually."
+  D:
+    - id: ikea_billy
+      label: "IKEA: BILLY"
+      desc: "Direct-PDP add-to-cart with cookie/upsell overlays."
+    - id: ikea_search_add
+      label: "IKEA: search → add"
+      desc: "Search-result variant disambiguation + overlays."
+    - id: bestbuy_airpods
+      label: "Best Buy: AirPods"
+      desc: "Dense PDP, color/variant picker, overlay dismissal."
