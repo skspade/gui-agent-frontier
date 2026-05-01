@@ -90,6 +90,8 @@ def build_sweep_index(
             if not model or not shot:
                 continue
             index.setdefault((model, task), []).append((sweep_ts, shot))
+    for entries in index.values():
+        entries.sort(key=lambda x: x[0])
     return index
 
 
@@ -108,7 +110,11 @@ def resolve_screenshots(
     for run in cell["runs"]:
         shot_path: str | None = None
         candidate = run.get("final_screenshot")
-        if candidate and Path(candidate).is_file():
+        if (
+            candidate
+            and not candidate.startswith("/tmp/")
+            and Path(candidate).is_file()
+        ):
             shot_path = candidate
         else:
             pool = sweep_pool.get((run.get("model"), run.get("task")), [])
@@ -180,6 +186,7 @@ def main(repo_root: Path | None = None) -> None:
                 "ts": run.get("ts"),
                 "outcome": run.get("outcome"),
                 "category": run.get("category"),
+                "pass": _is_pass(run),
                 "steps": run.get("steps"),
                 "elapsed_s": run.get("elapsed_s"),
                 "harness": run.get("harness"),

@@ -106,7 +106,7 @@ function openPanel(modelId, testId) {
   const cell = cellMap.get(modelId + "::" + testId);
   if (!cell) return;
   const runs = cell.runs.map(r => {
-    const passClass = r.category === "pass" ? "pass" : "fail";
+    const passClass = r.pass ? "pass" : "fail";
     const passLabel = r.category || r.outcome || "?";
     const ts = (r.ts || "").replace("T", " ").slice(0, 16);
     const steps = r.steps != null ? `${r.steps} steps` : "";
