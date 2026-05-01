@@ -60,14 +60,30 @@ def _git(args: list[str], cwd: Path) -> str:
     return subprocess.check_output(["git", *args], cwd=cwd, text=True).strip()
 
 
+def _extract_inner(transcript: dict) -> dict:
+    """The claude --print --output-format json envelope's `result` field is
+    a JSON-encoded string of the model's final response. Some legacy stubs
+    pass it as an already-decoded dict — accept both."""
+    result_field = transcript.get("result")
+    if isinstance(result_field, str):
+        try:
+            return json.loads(result_field)
+        except json.JSONDecodeError:
+            return {}
+    if isinstance(result_field, dict):
+        return result_field
+    return {}
+
+
 def _decide_and_act(*, iteration: int, before_path: Path, after_path: Path,
                     transcript_path: Path, learnings_path: Path,
                     workdir: Path) -> str:
     before = json.loads(before_path.read_text())
     after  = json.loads(after_path.read_text())
     transcript = json.loads(transcript_path.read_text()) if transcript_path.exists() else {}
-    hypothesis = transcript.get("result", {}).get("hypothesis") or transcript.get("hypothesis") or "(not reported)"
-    change_files = sorted(set(transcript.get("result", {}).get("change_files") or transcript.get("change_files") or []))
+    inner = _extract_inner(transcript)
+    hypothesis = inner.get("hypothesis") or transcript.get("hypothesis") or "(not reported)"
+    change_files = sorted(set(inner.get("change_files") or transcript.get("change_files") or []))
 
     delta = format_suite_delta(before, after)
 

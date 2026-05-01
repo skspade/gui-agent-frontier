@@ -1268,7 +1268,7 @@ This task validates the orchestrator's plumbing without spending Max-subscriptio
 cat > /tmp/claude_stub.sh <<'EOF'
 #!/usr/bin/env bash
 cat <<'JSON'
-{"result": {"hypothesis": "stub: no change proposed", "change_files": []}}
+{"type":"result","result":"{\"hypothesis\":\"stub: no change proposed\",\"change_files\":[]}","session_id":"stub"}
 JSON
 EOF
 chmod +x /tmp/claude_stub.sh

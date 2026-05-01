@@ -59,3 +59,41 @@ def test_render_learnings_block_contains_required_sections():
     assert "ikea_billy: fail → pass" in block
     assert "abc1234" in block
     assert "iteration 1" in block.lower()
+
+
+def test_extract_inner_handles_string_envelope():
+    """Real claude --print --output-format json puts the model's response
+    JSON as a STRING inside `result`."""
+    from scripts.iteration_step import _extract_inner
+    envelope = {
+        "type": "result",
+        "result": '{"hypothesis": "fix x", "change_files": ["a.py"]}',
+        "session_id": "abc",
+    }
+    inner = _extract_inner(envelope)
+    assert inner == {"hypothesis": "fix x", "change_files": ["a.py"]}
+
+
+def test_extract_inner_handles_dict_envelope_legacy():
+    """Test stubs pass `result` as already-decoded dict; accept this for
+    dry-run compatibility."""
+    from scripts.iteration_step import _extract_inner
+    envelope = {"result": {"hypothesis": "stub", "change_files": []}}
+    inner = _extract_inner(envelope)
+    assert inner == {"hypothesis": "stub", "change_files": []}
+
+
+def test_extract_inner_handles_unparseable_string():
+    """If the model returned plain text (not JSON), return empty inner so
+    the caller falls through to the top-level transcript fields or
+    '(not reported)'."""
+    from scripts.iteration_step import _extract_inner
+    envelope = {"result": "I made a change to actions.py."}
+    inner = _extract_inner(envelope)
+    assert inner == {}
+
+
+def test_extract_inner_handles_missing_result():
+    from scripts.iteration_step import _extract_inner
+    assert _extract_inner({}) == {}
+    assert _extract_inner({"type": "result", "session_id": "x"}) == {}
