@@ -228,6 +228,11 @@ def main() -> int:
     ap.add_argument("--sweep-id", default=_dt.date.today().isoformat() + "-sweep")
     ap.add_argument("--ssh-alias", default="thunder",
                     help="SSH alias for thunder target (default: thunder)")
+    ap.add_argument("--skip-swap", action="store_true",
+                    help="skip the swap step (assumes server is already serving "
+                         "the requested model). Useful for dry-running the thunder "
+                         "branch against a local llama-server before paying for "
+                         "Thunder compute.")
     args = ap.parse_args()
 
     if not args.task and not args.tasks:
@@ -248,7 +253,11 @@ def main() -> int:
     print(f"tasks:    {tasks}")
     print(f"n:        {args.n}")
 
-    if args.target == "local":
+    if args.skip_swap:
+        print("[skip-swap] verifying server already healthy at localhost:8080")
+        if not health_check(10):
+            sys.exit("ERROR: --skip-swap given but localhost:8080 not responding /health")
+    elif args.target == "local":
         swap_local(args.model, args.quant)
     else:
         swap_thunder(args.ssh_alias, args.model, args.quant)
