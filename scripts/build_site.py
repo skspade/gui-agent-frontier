@@ -51,3 +51,54 @@ def aggregate_cells(
     for cell in cells.values():
         cell["runs"].sort(key=lambda r: r.get("ts", ""))
     return cells
+
+
+def build_sweep_index(
+    sweeps_dir: Path,
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    """Return {(model, task): [(timestamp, abs_screenshot_path), ...]}."""
+    index: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for summary_path in Path(sweeps_dir).glob("*/summary.json"):
+        try:
+            summary = json.loads(summary_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        task = summary.get("task")
+        if not task:
+            continue
+        sweep_ts = summary_path.parent.name  # e.g. "20260501-011611"
+        for result in summary.get("results", []):
+            model = result.get("model")
+            shot = result.get("screenshot_path")
+            if not model or not shot:
+                continue
+            index.setdefault((model, task), []).append((sweep_ts, shot))
+    return index
+
+
+def resolve_screenshots(
+    cell: dict[str, Any],
+    sweep_index: dict[tuple[str, str], list[tuple[str, str]]],
+) -> list[dict[str, Any]]:
+    """For each run in cell, find the best available screenshot path.
+
+    Preference: runs.jsonl `final_screenshot` if it exists on disk; else
+    consume one entry from the matching sweep_index list (in order).
+    """
+    resolved: list[dict[str, Any]] = []
+    sweep_pool = {k: list(v) for k, v in sweep_index.items()}
+
+    for run in cell["runs"]:
+        shot_path: str | None = None
+        candidate = run.get("final_screenshot")
+        if candidate and Path(candidate).is_file():
+            shot_path = candidate
+        else:
+            pool = sweep_pool.get((run.get("model"), run.get("task")), [])
+            while pool:
+                _, p = pool.pop(0)
+                if Path(p).is_file():
+                    shot_path = p
+                    break
+        resolved.append({"run": run, "src_path": shot_path})
+    return resolved
