@@ -3684,14 +3684,19 @@ cell, not just the backfill subset.
   fixes the param-name issue). drag_v2 3/3, toolbar 0/3 (exhausted).
 - mai-ui-8b: 0/9 across the three C cells (stuck_loop or exhausted).
   Canvas grounding is mai-ui's binding cliff.
-- qwen-72B: 0/9 by `category=premature_done`, BUT all 6 drag/drag_v2
-  final.pngs have non_white=6992 in the canvas region (>5000 verification
-  threshold = rectangle WAS DRAWN). This is the same false-fail pattern
-  Phase 22 caught for Holo3 IQ3_XXS — the `done` action was emitted
-  before the runner's checker accepted the visual outcome. The webapp
-  shows 0/3 but the thumbnails show drawn rectangles. Truthful as
-  recorded; an audit-class finding for the runner's premature-done
-  detector when a canvas draw is the success criterion.
+- qwen-72B: 0/9 by `category=premature_done`. **Initial reading was
+  that this was a runner false-fail (non_white=6992 > 5000 threshold)
+  — that interpretation was wrong.** The 6992 included UI chrome
+  (toolbar, side panel); tighter canvas-only crop shows non_white=0 vs
+  UV-8B's 377 on a real pass. Per the smoke logs, qwen emitted two
+  separate `click_at` (700,400) → (1100,600) instead of one
+  `drag(x1=700,y1=400,x2=1100,y2=600)` — two clicks don't register as
+  a drag in Excalidraw, so the canvas was genuinely empty. The qwenvl
+  harness's trained JSON action vocab uses `left_click` for click and
+  has no native `drag` verb; the model decomposed the requested drag
+  into two clicks. Runner classification of premature_done is correct.
+  This is a *recipe / harness-vocabulary cliff* on qwen for canvas
+  drag, not a runner bug.
 
 **Class D — IKEA / Best Buy:**
 - ui-venus-1.5-30b-a3b: ikea_billy 3/3, ikea_search_add 3/3,
@@ -3726,11 +3731,22 @@ cell, not just the backfill subset.
 
 ### Runner observations / audit-class findings
 
-- **`category=premature_done` is over-aggressive for class-C tasks.**
-  6 of 6 qwen-72B drag/drag_v2 runs were flagged premature_done with
-  pixel-verified successful rectangle draws. The runner should treat
-  a passing `VERIFICATION_REGION` pixel-count as overriding the
-  premature-done flag for tasks that declare such a region.
+- **Defensive verification override landed in the runner** as a
+  follow-up to this backfill. `custom_agent_tasks/excalidraw_drag.py`
+  and `excalidraw_drag_v2.py` now declare
+  `VERIFICATION_REGION_FRAC = (0.30, 0.30, 0.70, 0.70)` (canvas-core,
+  excludes toolbar / side panel) and `VERIFICATION_MIN_NON_WHITE = 150`.
+  `custom_agent.py` reads these after each run and:
+  (a) records `verification_pixel_count` on every row for audit trail;
+  (b) upgrades a `stuck_premature_done` outcome to the model's terminal
+  action (`done` / `call_user`) iff the pixel count meets the threshold
+  in the declared region.
+  This is purely defensive — on this backfill's data the override
+  would not fire on any qwen-72B run (pixel counts are 0). It
+  protects against a UI-Venus-like model that genuinely draws a
+  rectangle then emits `Finished` after a no-effect click and would
+  otherwise be classified `stuck_premature_done`. Tested against
+  hand-built fixtures in `scripts/custom_agent/test_run_log.py`.
 - **`saucedemo_backpack_only` for UV30 is 0/3 stuck_loop**, despite UV30
   being 3/3 on the harder `saucedemo_full_checkout`. Worth a deeper
   trace — the simpler task should not be harder.

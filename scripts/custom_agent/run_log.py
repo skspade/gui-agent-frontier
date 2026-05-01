@@ -11,6 +11,31 @@ from pathlib import Path
 DEFAULT_LOG = Path("/home/seans/Source/vision-model/data/runs.jsonl")
 
 
+def count_non_white_in_region(
+    png_path: Path | str,
+    region_frac: tuple[float, float, float, float],
+    threshold: int = 245,
+) -> int:
+    """Count near-non-white pixels in a normalized fractional region of a PNG.
+
+    region_frac = (left, top, right, bottom) as fractions in [0,1] of the
+    full image dimensions. A pixel counts when any RGB channel < threshold
+    (i.e. "not effectively white"). Used by the runner to upgrade a
+    stuck_premature_done verdict to pass when the task supplies a
+    canvas-success region and the canvas is non-empty.
+    """
+    from PIL import Image
+    im = Image.open(png_path).convert("RGB")
+    w, h = im.size
+    l, t, r, b = region_frac
+    box = (int(w * l), int(h * t), int(w * r), int(h * b))
+    region = im.crop(box)
+    return sum(
+        1 for px in region.getdata()
+        if px[0] < threshold or px[1] < threshold or px[2] < threshold
+    )
+
+
 def append_run(path: Path, row: dict) -> None:
     """Append one JSON object as a single line. Creates parent dirs."""
     path.parent.mkdir(parents=True, exist_ok=True)

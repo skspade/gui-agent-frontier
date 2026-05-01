@@ -31,7 +31,7 @@ from scripts.custom_agent.model import (
 )
 from scripts.custom_agent.actions import dispatch
 from scripts.custom_agent.cart_state import verify_cart_state
-from scripts.custom_agent.run_log import append_run, classify_failure, DEFAULT_LOG
+from scripts.custom_agent.run_log import append_run, classify_failure, count_non_white_in_region, DEFAULT_LOG
 from scripts.custom_agent.site_configs import match_site_config
 
 # Harness paths:
@@ -227,8 +227,40 @@ async def run(task_module) -> None:
 
         FINAL_PNG.write_bytes(base64.b64decode(await page.screenshot()))
         elapsed = time.time() - t0
+
+        # Visual verification override: if the task declares a canvas-success
+        # region (VERIFICATION_REGION_FRAC + VERIFICATION_MIN_NON_WHITE) and the
+        # final screenshot's non-white pixel count meets the threshold, upgrade
+        # a stuck_premature_done verdict to the model's reported terminal
+        # action. The pixel count is always recorded (informational) when the
+        # task declares the region, so runs are auditable.
+        verif_region = getattr(task_module, "VERIFICATION_REGION_FRAC", None)
+        verif_threshold = getattr(task_module, "VERIFICATION_MIN_NON_WHITE", None)
+        verification_pixel_count: int | None = None
+        verification_overrode_premature_done: bool = False
+        if verif_region is not None and verif_threshold is not None:
+            try:
+                verification_pixel_count = count_non_white_in_region(FINAL_PNG, verif_region)
+            except Exception as e:
+                print(f"[verification] pixel-check failed: {e}", file=sys.stderr)
+            if (
+                outcome == "stuck_premature_done"
+                and verification_pixel_count is not None
+                and verification_pixel_count >= verif_threshold
+                and history
+            ):
+                terminal_kind = history[-1].kind if history[-1].kind in ("done", "call_user") else "done"
+                print(
+                    f"[verification] pixel_count={verification_pixel_count} "
+                    f">= threshold={verif_threshold} — upgrading "
+                    f"stuck_premature_done -> {terminal_kind}",
+                    file=sys.stderr,
+                )
+                outcome = terminal_kind
+                verification_overrode_premature_done = True
+
         print(f"\n=== outcome: {outcome} | steps: {len(history)} | elapsed: {elapsed:.1f}s ===")
-        append_run(DEFAULT_LOG, {
+        row = {
             "task": task_module.__name__.rsplit(".", 1)[-1],
             "task_class": getattr(task_module, "TASK_CLASS", None),
             "model": os.environ.get("MODEL", "ui-venus-1.5-8b"),
@@ -239,7 +271,13 @@ async def run(task_module) -> None:
             "steps": len(history),
             "elapsed_s": round(elapsed, 1),
             "final_screenshot": str(FINAL_PNG),
-        })
+        }
+        if verification_pixel_count is not None:
+            row["verification_pixel_count"] = verification_pixel_count
+            row["verification_threshold"] = verif_threshold
+        if verification_overrode_premature_done:
+            row["verification_overrode_premature_done"] = True
+        append_run(DEFAULT_LOG, row)
         print(f"final screenshot: {FINAL_PNG}")
         print(f"per-step screenshots: {STEPS_DIR}")
 

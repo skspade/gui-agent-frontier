@@ -13,3 +13,13 @@ MAX_STEPS = 25
 
 # Task class (see docs/thesis.md): C — visual-grounding-required (canvas drag)
 TASK_CLASS = "C"
+
+# Visual verification: count non-white pixels in the canvas-core region of
+# the final screenshot. UV-Venus-1.5-8B genuine passes leave ~370+ non-white
+# pixels here (a drawn rectangle); Qwen-72B premature-done runs (which
+# emitted two click_at instead of drag) leave 0. Threshold 150 cleanly
+# separates "rectangle drawn" from "empty canvas". Region is normalized
+# (left, top, right, bottom) as fractions of the screenshot's width/height
+# so it works at any viewport size.
+VERIFICATION_REGION_FRAC = (0.30, 0.30, 0.70, 0.70)
+VERIFICATION_MIN_NON_WHITE = 150

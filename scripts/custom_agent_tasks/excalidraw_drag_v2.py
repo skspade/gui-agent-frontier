@@ -20,3 +20,7 @@ MAX_STEPS = 25
 
 # Task class (see docs/thesis.md): C — visual-grounding-required (canvas drag)
 TASK_CLASS = "C"
+
+# Same visual verification as excalidraw_drag.py — see comment there.
+VERIFICATION_REGION_FRAC = (0.30, 0.30, 0.70, 0.70)
+VERIFICATION_MIN_NON_WHITE = 150

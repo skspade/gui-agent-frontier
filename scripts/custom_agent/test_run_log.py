@@ -1,6 +1,11 @@
 import json
 from pathlib import Path
-from scripts.custom_agent.run_log import append_run, classify_failure
+from PIL import Image
+from scripts.custom_agent.run_log import (
+    append_run,
+    classify_failure,
+    count_non_white_in_region,
+)
 
 
 def test_append_run_writes_one_jsonl_row(tmp_path):
@@ -57,3 +62,33 @@ def test_classify_dispatch_hang():
 
 def test_classify_unknown_outcome_is_namespaced():
     assert classify_failure(outcome="weird_new_thing", steps=1) == "unknown:weird_new_thing"
+
+
+def _make_png(tmp_path: Path, name: str, w: int, h: int, draw_box=None):
+    """Make a w×h PNG with a white background; optionally draw a black box at
+    `draw_box = (x0, y0, x1, y1)` in pixel coords to simulate a drawn rectangle."""
+    img = Image.new("RGB", (w, h), (255, 255, 255))
+    if draw_box is not None:
+        from PIL import ImageDraw
+        ImageDraw.Draw(img).rectangle(draw_box, outline=(0, 0, 0), width=3)
+    p = tmp_path / name
+    img.save(p)
+    return p
+
+
+def test_count_non_white_empty_canvas_in_canvas_core(tmp_path):
+    # 1248x615 all-white canvas — qwen-72B premature_done baseline
+    p = _make_png(tmp_path, "empty.png", 1248, 615)
+    assert count_non_white_in_region(p, (0.30, 0.30, 0.70, 0.70)) == 0
+
+
+def test_count_non_white_drawn_rectangle_in_canvas_core(tmp_path):
+    # Rectangle drawn squarely inside the canvas-core region — UV-8B genuine pass
+    p = _make_png(tmp_path, "drawn.png", 1248, 615, draw_box=(500, 250, 750, 400))
+    assert count_non_white_in_region(p, (0.30, 0.30, 0.70, 0.70)) > 150
+
+
+def test_count_non_white_rectangle_outside_region_does_not_count(tmp_path):
+    # Rectangle drawn in the toolbar area (top of image), NOT in canvas-core
+    p = _make_png(tmp_path, "toolbar.png", 1248, 615, draw_box=(50, 30, 200, 80))
+    assert count_non_white_in_region(p, (0.30, 0.30, 0.70, 0.70)) == 0
