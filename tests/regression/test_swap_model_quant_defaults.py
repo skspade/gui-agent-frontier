@@ -41,14 +41,12 @@ def _parse_per_model_overrides(text: str) -> dict[str, str]:
             continue
         per_model = re.search(r'QUANT="\$\{2:-([A-Z0-9_]+)\}"', body)
         out[name] = per_model.group(1) if per_model else top_default
+    assert out, "no per-model arms parsed — script restructured?"
     return out
 
 
 def test_per_model_quant_defaults_match_expected():
     text = SCRIPT.read_text()
     defaults = _parse_per_model_overrides(text)
-    assert defaults == EXPECTED_DEFAULTS, (
-        f"swap_model.sh per-model quant defaults drifted.\n"
-        f"  expected: {EXPECTED_DEFAULTS}\n"
-        f"  got:      {defaults}"
-    )
+    # Bare assert lets pytest's assertion rewriting produce a dict diff on drift.
+    assert defaults == EXPECTED_DEFAULTS
