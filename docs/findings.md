@@ -3344,3 +3344,246 @@ Stepping from 30B-A3B (the local class) to 72B-dense moves the cliff
   showing stuck_loop on cart-icon-mistake could be a single-run bad
   draw. If Qwen-72B is consistently worse than Holo3 here, that's a
   task-understanding regression worth recording.
+
+## 2026-05-01 — Phase 22: Qwen-72B regression confirmation + Holo3 quant cliff probe + Phase 20 errata
+
+Same Thunder A100 instance pattern as Phase 20/21 (restored from
+snapshot `vision-model-thunder-2026-04-30`). Three goals:
+
+1. **Verify Phase 20's "IQ3_XXS is below the cliff for excalidraw_drag"
+   verdict** by re-running n=3 (Tier-2 evidence).
+2. **Probe one quant notch lower** (IQ2_M, 11.7GB) on the same task to
+   actually find where the cliff sits, if it sits anywhere on Holo3.
+3. **Re-run Phase 21 cart suite cells** that were either confound-tainted
+   (Qwen-72B excalidraw → "PASS" from off-viewport screenshot) or
+   borderline (saucedemo stuck_loop n=1, bestbuy oscillation n=1) to
+   separate single-run noise from durable failure modes.
+
+Run ids: `20260501-010141` (Holo3 IQ3_XXS x3), `20260501-011125` (Holo3
+IQ2_M x3), `20260501-011611` (Qwen-72B excalidraw_drag_v2 x1),
+`20260501-cart-qwen72b-phase22` (Qwen-72B saucedemo x3 +
+bestbuy_airpods_scroll x1).
+
+Total Thunder spend: ~$1.55 (1.4 hr A100XL @ $1.10/hr including a slow
+~22 min snapshot restore vs the ~13 min baseline — 150GB on a busy day).
+
+### Errata: Phase 20 ground-truth verdicts were inverted
+
+Pre-Phase-22 sanity check — viewed all four `final.png` artifacts from
+`data/sweeps/20260430-212754/` directly:
+
+| Cell | Phase 20 verdict | Phase 22 visual reread | Diagnosis |
+|---|---|---|---|
+| Holo3 IQ3_XXS | FAIL — "empty canvas, confabulated" | Rectangle visibly drawn, selected | False fail (manual review error) |
+| Holo3 Q4_K_M  | PASS | Rectangle visibly drawn | Correct |
+| Holo3 Q6_K    | PASS | Rectangle visibly drawn | Correct |
+| Qwen-72B Q4_K_M | PASS (manual_recovery)  | Empty viewport with "Scroll back to content" — rectangle drawn but viewport scrolled away | False pass (Escape-after-drag confound) |
+
+Smoke logs for the inverted cells confirm this:
+- IQ3_XXS step 3 dispatched `drag(700, 400, 1100, 600)` cleanly; the
+  agent's success report matches the actual canvas state.
+- Qwen-72B's step 2 dispatched `drag` AND `send_keys: Escape` in the
+  same turn. Excalidraw treats the post-drag Escape as
+  unfocus-and-shift-viewport, which scrolled the freshly-drawn element
+  out of view. The "Scroll back to content" indicator is Excalidraw's
+  signature for "elements exist, viewport is empty."
+
+The Phase 20 cliff narrative ("IQ3_XXS is below the cliff for
+excalidraw_drag on Holo3-35B-A3B") **is not supported by the data and
+is hereby retracted.** All three Holo3 quants we ran (IQ3_XXS, Q4_K_M,
+Q6_K) successfully drew the rectangle on n=1.
+
+The original `summary.json` notes are preserved on disk as the
+historical record; this errata is the corrected interpretation.
+
+### Phase 22 results — corrected baseline + cliff probe
+
+**`excalidraw_drag` (class C) — verification region (300, 100, 1750,
+1000), threshold 5000 non-white px (catches blank-canvas confabulations
+and off-viewport "PASS" screenshots).**
+
+| Model · Quant | n | Pass rate | non_white range | Wall time / run |
+|---|---|---|---|---|
+| Holo3 IQ3_XXS | 3 | **3/3** | 6695-6843 | 62.8-139.8s (cold/warm) |
+| Holo3 IQ2_M   | 3 | **3/3** | 6490-7083 | 61.0-91.8s |
+| Qwen-72B Q4_K_M (drag_v2, no Escape) | 1 | 1/1 | 6830 | 166.6s |
+
+The cliff for `excalidraw_drag` on Holo3-35B-A3B is **at or below
+IQ2_M** — i.e. somewhere in the IQ2_S / IQ2_XS / IQ2_XXS / IQ1_M
+range, if it exists at all on this task. Holo3-35B's grounding head
+holds up at roughly 1/3 the original FP16 weight size for this single-
+drag probe.
+
+**`excalidraw_drag_v2` (Phase 22 corrected variant)** explicitly
+forbids any keyboard input after the drag and removes the misleading
+"capture a screenshot" instruction (which led Qwen to invoke Escape
+as an "I'm done" signal in Phase 20). Qwen-72B with the corrected task
+draws the rectangle and the verification screenshot reflects it.
+
+### Phase 22 results — Phase 21 cart-suite re-runs
+
+**`saucedemo_full_checkout` (class B) on Qwen-72B Q4_K_M, n=3:**
+
+| Run | Outcome | Steps | Elapsed | Cart state at stuck-out |
+|---|---|---|---|---|
+| 1 | stuck_loop | 12 | 66.1s | count=0 (never added) |
+| 2 | stuck_loop | 12 | 45.0s | count=0 (never added) |
+| 3 | stuck_loop | 13 | 51.2s | count=1 (added one item) |
+
+**0/3 PASS** — Phase 21's stuck_loop reproduces cleanly. The failure
+mode in 2/3 runs is identical to Phase 21 n=1 (after login + sort,
+fixate on cart-icon-area at (1228, 94) for 5+ consecutive no-effect
+clicks instead of per-item Add-to-cart). Run 3 added one item then got
+stuck navigating to the cart icon at (1228, 34). The saucedemo
+regression vs Phase 19a Holo3 (1/3 partial passes) is **durable, not
+single-run noise**.
+
+This is task-understanding regression, not visual grounding capacity.
+Qwen-72B *can* see the per-item buttons (the screenshots show them
+clearly), but consistently picks the wrong target. Aligns with the
+M-1 backlog rationale (within-family parameter-step probe via UI-Venus-
+Ground-72B is the right control to separate "Qwen RL recipe specifically"
+from "70B-class generally").
+
+**`bestbuy_airpods_scroll` (class D, Phase 22 variant with explicit
+"scroll all the way to the bottom" hint) on Qwen-72B Q4_K_M, n=1:**
+
+- Outcome: `max_steps_reached`, 60 steps, 17.5 min wall clock.
+- Steps 0-3: search bar → "AirPods" → Enter → click result card. Reached
+  PDP cleanly (1/4 of the original Phase 21 progress wall — same place).
+- Steps 4-59: 56 consecutive `scroll dir=down`. y position oscillates
+  0↔600 (one viewport height) for the entire remainder of the run. Page
+  height is 6906px; the agent never advances past 600px.
+- Scroll-probe shows the wheel events hit either an `IFRAME` or an
+  in-page hero `IMG` at the scroll target (616, 307). The dispatcher's
+  scroll-fallback flips sign when no progress is made, so what looks
+  like "the scroll is working" in the y=0→600→0 trace is actually the
+  fallback bouncing back and forth without ever escaping the iframe's
+  wheel-intercept.
+
+**The explicit scroll-to-bottom hint did NOT help.** This is strong
+evidence for the iframe-overlay-wall hypothesis (Phase 19a Priority 2,
+"preflight modal/overlay cleanup is the right next investment, not
+bigger models"): the wall is structural at the dispatcher / DOM layer,
+not at the model layer. A real fix would need to either:
+
+  (a) call `Element.scrollIntoView` on the underlying `<html>` body
+      element, bypassing the iframe's wheel-event handler;
+  (b) call `window.scrollTo(0, docHeight)` from the dispatcher when
+      `scroll-fallback` detects the same iframe target N times in a
+      row;
+  (c) widen the dispatcher's `scroll` action to take an explicit
+      target element selector and skip iframes by default.
+
+### What worked
+
+- **Pixel-check verification in `sweep.py`** (per-task `VERIFICATION_REGION`
+  + `VERIFICATION_MIN_NON_WHITE` constants on the smoke task module).
+  Backtested cleanly against Phase 20 data: passes the three Holo3
+  cells (~6500-7000 non-white in the canvas band) and flags Qwen's
+  "PASS" as suspicious (0 non-white = scrolled-off-viewport). Real-time
+  verdict in Phase 22 matched manual final.png review on every cell.
+  **Would have caught both Phase 20 misreads on day one.**
+- **`sweep.py --repeats N`** with per-run `cell/run-{i}/` subdirs.
+  Single swap, N smoke invocations, archived cleanly. Each cell entry
+  in `summary.json` carries `run_index`, `final_non_white_px`, and an
+  optional `verification_warning` string.
+- **`excalidraw_drag_v2.py`** as a new corrected smoke variant (per
+  CLAUDE.md "don't edit smoke payloads in place"). Original
+  `excalidraw_drag.py` kept intact for n=3 reconfirmation; v2 is for
+  Qwen-class models that interpret "capture a screenshot" as
+  "send Escape."
+- **Snapshot restore from Phase 20** as the provisioning path. ~22 min
+  to RUNNING (slower than the docs' ~8.5 min/100GB for our 150GB; load
+  varies with cluster busyness). All weights, llama.cpp build, tmux
+  scaffolding intact. ~$0.40 of the spend was idle-during-restore at
+  $1.10/hr — re-bootstrap from `base` would have been slower.
+- The new Holo3 IQ2_M GGUF (11.66 GB) downloaded via
+  `huggingface_hub.hf_hub_download` in ~2 min on the instance; existing
+  `swap_model_remote.sh` Holo3 case reads any IQ-suffixed quant by
+  filename, so no script edits needed.
+
+### What broke
+
+- **bestbuy_airpods_scroll runtime exceeded the 1500s Monitor timeout
+  budget on the first attempt** (60-step run at 17.5 min wall clock).
+  Re-armed once it became clear the long scroll loop wouldn't return
+  early. Future cart-D probes should pre-budget Monitor for ≥30 min
+  per `MAX_STEPS=60` cell.
+- **Initial pixel-check tuning attempt (whole-image non-white count)
+  failed to discriminate** Phase 20's IQ3_XXS vs Q4_K_M (10779 vs
+  10839 non-white — diff of 60 pixels swamped by chrome). Switched to
+  cropped region `(300, 100, 1750, 1000)` which excludes Excalidraw's
+  toolbar and side panel; that gave the clean ~6500 vs 0 split between
+  "rectangle drawn" and "blank viewport." Documented in
+  `excalidraw_drag.py`'s `VERIFICATION_REGION` comment.
+
+### Surprised
+
+- **Holo3-35B-A3B at IQ2_M is still drawing rectangles cleanly.** The
+  active 3B params at 2-bit imatrix quantization is roughly 0.75 GB of
+  active weight at inference time; the visual encoder + grounding head
+  apparently survive this much compression for the canvas-drag probe.
+  Doesn't say anything about long-horizon planning at this quant —
+  saucedemo / bestbuy-class probes on Holo3 IQ2_M would need separate
+  runs to characterize.
+- **Phase 20's "FAIL: empty canvas, confabulated" verdict was a manual
+  review error**, not a model failure. The lesson is that *human visual
+  inspection of small images is itself unreliable*; the pixel-check
+  layer added in Phase 22 closes this loop. We were guessing "what
+  failure mode would I expect from an aggressive quant" and pattern-
+  matched the wrong failure shape onto a real PASS. Adding the
+  pixel-check layer means future runs won't need this kind of human
+  judgment for the canvas-drawn / canvas-blank discrimination.
+- **Bestbuy scroll-hint had zero effect.** The model chose "scroll
+  down" 56 consecutive times (the right action). The dispatcher
+  faithfully attempted each scroll. The scroll just didn't work
+  because the wheel-event target was the iframe. This is the
+  cleanest demonstration so far that "give the model better
+  instructions" is not the lever for class-D problems on heavy-modal
+  retailers — the dispatcher needs to be smarter about *what to
+  scroll*, not what coordinate to scroll at.
+
+### Configuration deltas vs the plan
+
+- Added `VERIFICATION_REGION` + `VERIFICATION_MIN_NON_WHITE` constants
+  to `scripts/smokes/excalidraw_drag.py` (non-behavioral metadata —
+  the agent never sees these; they're only read by sweep.py post-run).
+- Created `scripts/smokes/excalidraw_drag_v2.py` (corrected task,
+  preserves Phase 20's `excalidraw_drag.py` history per CLAUDE.md
+  "don't edit smoke payloads in place" rule).
+- Created `scripts/custom_agent_tasks/bestbuy_airpods_scroll.py` (Phase
+  22 variant with explicit scroll-to-bottom hint and "do not use
+  search-results-card Add-to-cart" anti-bypass guard).
+- `scripts/thunder/sweep.py` extended with `--repeats N`, per-task
+  pixel verification (PIL crop + non-white count + threshold-warning),
+  per-run `cell/run-{i}/` archive layout, and `final_non_white_px` /
+  `verification_warning` fields in `summary.json`. CellResult schema
+  gained `run_index`.
+- M-1 backlog item added: UI-Venus-Ground-72B (within-Venus-family 72B
+  control for the Qwen-72B regression findings on saucedemo).
+
+### Next
+
+- **Implement the iframe-bypass scroll path in the dispatcher** before
+  re-running any Best Buy probe. Phase 21 + Phase 22 between them give
+  Tier-2 evidence (n=2 across two task variants) that the scroll
+  bottleneck is dispatcher-bound, not model-bound. Cheapest cleanup:
+  add a "if scroll-probe hit element is IFRAME, retarget at the html
+  body" branch in `scripts/custom_agent/actions.py`. Acceptance: the
+  same Qwen-72B + bestbuy_airpods_scroll cell completes in <60 steps.
+- **Run UI-Venus-Ground-72B (M-1) on the same cart suite** once
+  GGUFs are sourced/converted. Within-family parameter-step probe vs
+  the 8B baseline. Specifically, repeat saucedemo_full_checkout x3
+  to test whether the cart-icon-fixation is "70B-dense generally" or
+  "Qwen-VL-72B specifically."
+- **Probe Holo3 lower than IQ2_M** on excalidraw_drag if the cliff
+  matters for the Pareto story. IQ2_XXS (9.5 GB) is the next obvious
+  notch; IQ1_M would be a wide bracket. n=3 each, ~6 min of Thunder
+  per cell. Skip if "Holo3-35B at any quant we tested handles class C
+  drag" is enough for the frontier table.
+- **Saucedemo regression isolation**: re-run the same cells on Holo3-
+  35B-A3B Q4_K_M (we have it on the instance) at n=3 to confirm Holo3
+  doesn't have the same task-understanding regression. If Holo3 is
+  fine and Qwen is broken at n=3, the regression is recipe-specific,
+  not parameter-specific.

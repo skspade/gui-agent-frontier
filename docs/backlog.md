@@ -346,6 +346,46 @@ There is no current external exposure requirement.
 
 ---
 
+## M-1 — Add UI-Venus-Ground-72B to the parameter-cliff matrix
+**Effort: m · Priority: M · Trigger: when next probing 70B-class on Class C**
+
+`inclusionAI/UI-Venus-Ground-72B` (https://huggingface.co/inclusionAI/UI-Venus-Ground-72B)
+is the 72B sibling of our default `UI-Venus-1.5-8B`. Same family, same
+training distribution — gives a clean parameter-step probe (8B → 72B
+within Venus) that's apples-to-apples in a way the cross-family
+Holo3 35B-A3B / Qwen2.5-VL-72B comparisons aren't.
+
+### Steps
+1. Verify GGUF availability — search HF for converted weights
+   (mradermacher, bartowski, unsloth, ggml-org, inclusionAI's own repos).
+2. If no public GGUF: convert from the safetensors via llama.cpp's
+   `convert_hf_to_gguf.py` + `llama-quantize` on a Thunder instance
+   (~150 GB persistent disk needed; bf16 weights ~144 GB).
+3. Add registry entry to `scripts/swap_model.sh` and
+   `scripts/thunder/swap_model_remote.sh`.
+4. Determine harness path. Likely `uivenus` (`<action>`/`<conclusion>`
+   tag grammar — same as the 8B), but verify with
+   `scripts/thunder/validate_harness.py` after first load.
+5. Run on the canonical class-C / class-B / class-D probes for
+   apples-to-apples comparison vs UI-Venus-1.5-8B.
+
+### Acceptance
+- GGUF on disk (Thunder or local depending on quant + VRAM fit) and
+  swap-script entries land cleanly.
+- One full pass against `excalidraw_drag` (class C), one against
+  `saucedemo_full_checkout` (class B), one against `bestbuy_airpods`
+  (class D) — n=1 each. Findings note the new cell on the frontier.
+
+### Why
+The current 70B-class data point on the frontier is Qwen2.5-VL-72B,
+which is a different family (different RL recipe, different vision
+encoder bias). UI-Venus-Ground-72B isolates "what does +9× parameters
+do *within the same training distribution*" from the family confound.
+Phase 21's saucedemo task-understanding regression on Qwen-72B is
+exactly the kind of finding that needs a within-family control.
+
+---
+
 ## Open questions (not yet sized as work items)
 
 These are explicitly recorded as "things we don't know yet" rather than

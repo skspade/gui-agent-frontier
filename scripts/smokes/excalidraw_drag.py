@@ -20,3 +20,13 @@ TASK = (
 
 # Task class (see docs/thesis.md): C — visual-grounding-required (canvas drag)
 TASK_CLASS = "C"
+
+# Pixel-check verification region (Phase 22): a generous canvas-area crop on
+# the 1887x1070 final.png that excludes the toolbar and side panel. A drawn
+# Excalidraw rectangle plus chrome leaves ~6500-7000 non-white pixels here;
+# a blank or scrolled-away viewport leaves <100. Phase 20 cross-check:
+# - Holo3 IQ3_XXS/Q4_K_M/Q6_K final.png: 6491-6999 non-white in this region
+# - Qwen-72B Q4_K_M final.png (rectangle drawn but Escape scrolled it away):
+#   0 non-white. Threshold 5000 catches the scrolled-away case cleanly.
+VERIFICATION_REGION = (300, 100, 1750, 1000)
+VERIFICATION_MIN_NON_WHITE = 5000
