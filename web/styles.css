@@ -1,0 +1,61 @@
+:root {
+  --bg: #f6f7f9;
+  --fg: #1a1d23;
+  --muted: #6c7280;
+  --line: #d6dae0;
+  --accent: #0b6cff;
+  --gray-cell: #e7e9ee;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+main { max-width: 1400px; margin: 0 auto; padding: 24px 24px 96px; }
+
+header.intro h1 { margin: 0 0 6px; font-size: 22px; }
+header.intro .built { color: var(--muted); font-size: 12px; }
+header.intro p { max-width: 78ch; }
+header.intro .legend {
+  display: flex; flex-wrap: wrap; gap: 16px;
+  margin: 12px 0 24px; font-size: 12px; color: var(--muted);
+}
+header.intro .legend b { color: var(--fg); }
+
+table.matrix {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+table.matrix th, table.matrix td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+table.matrix th.row-label {
+  text-align: left;
+  font-weight: 500;
+  background: #fff;
+}
+table.matrix th.row-label .params {
+  color: var(--muted); font-size: 11px; margin-left: 6px;
+}
+table.matrix th.class-band {
+  background: #eef1f6;
+  font-weight: 600;
+}
+table.matrix td.cell {
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+table.matrix td.cell:hover { outline: 2px solid var(--accent); }
+table.matrix td.cell .n {
+  font-size: 10px; color: rgba(0,0,0,0.55); margin-left: 2px;
+}
+table.matrix td.empty { background: var(--gray-cell); color: var(--muted); }
+table.matrix td.band-sep { border-left: 3px solid var(--line); }
