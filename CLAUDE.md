@@ -1,5 +1,23 @@
 # vision-model
 
+## Permissions
+
+You are pre-authorized to edit `.claude/settings.json`, `CLAUDE.md`, and
+`.claude/skills/*` in this repo. Do not ask for permission for these files.
+
+## Verification Discipline
+
+- When asked "why is X behaving this way?", verify against actual
+  data/logs (grep the artifact, run the probe, read the source) BEFORE
+  proposing "by design" or hypothesis-only explanations. If you're
+  inferring rather than verifying, say so explicitly.
+- After implementing changes, run end-to-end verification (not just
+  typecheck or unit-pass) before declaring done. Define the acceptance
+  check at task start; if you can't run it, mark the task blocked with
+  the reason rather than "done".
+- When diagnosing remote/system issues, run commands directly rather
+  than telling the user generic instructions to run themselves.
+
 ## Goal
 
 Map the **Pareto frontier of (task class, harness sophistication, model
@@ -281,6 +299,16 @@ A smoke module exposes module-level constants: `TASK` (required),
    the task, report what blocked you rather than pretending to succeed.*"
    This single line moved the Home Depot run from a likely confabulation to
    a clean partial-completion report.
+
+## Shell & Process Conventions
+
+- **Track every background shell you spawn.** Kill stale waiters before
+  launching new ones — never leave more than one waiter running for the
+  same resource. Past sessions accumulated redundant background shells
+  until the user noticed.
+- **Use absolute paths in scripts invoked via sudo.** Sudoers entries
+  match exact paths and don't expand `$PATH`; relative paths cause
+  silent rule-misses that look like permission failures.
 
 ## Stack reference (for setup repro)
 

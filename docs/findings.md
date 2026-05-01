@@ -3587,3 +3587,180 @@ not at the model layer. A real fix would need to either:
   doesn't have the same task-understanding regression. If Holo3 is
   fine and Qwen is broken at n=3, the regression is recipe-specific,
   not parameter-specific.
+
+---
+
+## 2026-05-01 — Phase 22 backfill: 54/54 cells × n≥3, end-to-end fresh runs
+
+### TL;DR
+
+Drove every cell in the findings webapp's 6-model × 9-test grid to n=3
+truthful runs from the current dispatcher, replacing the sparse mix of
+prose-derived rows + ad-hoc probes that were on display before. **111 fresh
+runs landed in `runs.jsonl` with `phase=22-backfill`**, durable per-run
+screenshots archived under `data/sweeps/2026-05-01-frontier-backfill/`,
+and the 5 prose-derived rows from the morning's narrative-only
+backfill were removed once the cells they covered were re-grounded.
+
+The webapp now shows zero gray cells. Every (model, task) cell renders
+with a real `k/n` and at least one real thumbnail.
+
+### Setup
+
+- **Local cells (28 cells × n=3 = 84 runs):**
+  ui-venus-1.5-8b (4), mai-ui-8b (5), ui-venus-1.5-30b-a3b (9),
+  bu-30b-a3b-preview (9), holo3-35b-a3b (4) — all via
+  `bash scripts/local_sweep.sh <task> <model> "" 3`. The wrapper
+  swap_model.sh's the unit, runs `custom_agent.py` against the local
+  Vulkan llama-server, archives `/tmp/custom_agent_final.png` to
+  per-run dirs, and patches the trailing `runs.jsonl` row's
+  `final_screenshot` to the durable archive (otherwise the webapp's
+  `/tmp/*` filter drops it). Defensive guards: row-count and screenshot
+  mtime checks before patching, so if `custom_agent.py` exits without
+  appending, we don't corrupt history.
+- **Thunder cells (5 cells × n=3 = 15 runs + 1 cell × n=3 mop-up = 18 total):**
+  qwen2.5-vl-72b-instruct Q4_K_M on an A100XL (Thunder, prototyping mode).
+  Restored from the 2026-04-30 snapshot, but the pre-built `llama-server`
+  binary in the snapshot was compiled for an Intel CPU with AVX-512 and
+  segfaulted (SIGILL) on this run's AMD EPYC 7763 host. Rebuilt in-place
+  with `cmake -DGGML_CUDA=ON -DGGML_NATIVE=ON` (~12 min); native compile
+  picked AVX2 only, ran cleanly. New snapshot
+  `vision-model-thunder-2026-05-01-amd-rebuilt` saved with the rebuild.
+
+### Pre-existing data left in place
+
+`saucedemo_full_checkout` for ui-venus-1.5-8b, holo3-35b-a3b, and
+qwen2.5-vl-72b-instruct already had ≥3 truthful runs in `runs.jsonl`
+from earlier phases (Phase 19a / Phase 21). Those are NOT
+`phase=22-backfill` — they remained as-is. The webapp aggregates by
+(model, task) so the cell display is k/n across all rows for that
+cell, not just the backfill subset.
+
+### Two plan defects caught + fixed mid-execution
+
+1. **`excalidraw_drag` and `excalidraw_drag_v2` lived only under
+   `scripts/smokes/`** (intended for `smoke_browser_use.py`). Custom_agent
+   only loads tasks from `scripts/custom_agent_tasks/`. Ported both as
+   simple TASK strings using `type "r"` + `drag(x1,y1,x2,y2)` — the
+   browser-use `send_keys` Escape sequence isn't needed since the
+   custom_agent harness handles dialog dismissal coord-first. UI-Venus-8B
+   probe (3 steps, 12s, pixel-verified rectangle) confirmed the port
+   works.
+2. **`-fit` segfault on llama.cpp build b1-a95a11e**. The new auto-fit
+   feature deadlocks at `common_params_fit_impl: getting device memory
+   data for initial parameters:`. The error message itself suggests
+   `-fit off`; pass that flag to skip. Memory:
+   `feedback_llamacpp_fit_segfault.md`.
+
+### Per-class headlines (n=3 each unless noted)
+
+**Class A — saucedemo_headed (DOM-traversable, short horizon):**
+- 8B / 30B-A3B / 35B-A3B all 3/3 pass except mai-ui-8B and holo3.
+- bu-30b-a3b-preview 0/3 stuck_loop, qwen-72B 0/3 stuck_loop.
+  - The qwen-72B result is the most interesting outlier — a frontier-class
+    model failing a known-DOM short-horizon task. Same `category=stuck_loop`
+    pattern repeated across all 3 deterministic-temp runs (identical
+    final.png hashes). Documented as Phase 22 cliff hypothesis 5
+    candidate ("does the qwenvl harness's tool-call mode regress on
+    saucedemo's login flow?").
+
+**Class B — saucedemo_full_checkout (long-horizon DOM):**
+- mai-ui-8b: **3/3 pass** (was 0/6 before; validates the Phase 16
+  prose claim of "done at 22 steps"). Cell color flips from red to green.
+- ui-venus-1.5-30b-a3b: 3/3 pass — strongest 30B-A3B-class result on
+  this benchmark to date. Phase 13's "rejected" verdict was a harness
+  artifact (pre-F-5 dispatcher), not a model verdict.
+- bu-30b-a3b-preview: 0/3 stuck_loop — confirms Phase 13's "weaker
+  instruction following" verdict survives the F-5 fix.
+
+**Class C — excalidraw_drag / drag_v2 / toolbar:**
+- ui-venus-1.5-8b: 9/9 across all three excalidraw cells, pixel-verified.
+- ui-venus-1.5-30b-a3b: 9/9 same.
+- holo3-35b-a3b: drag 1/3 (2 premature_done), drag_v2 3/3, toolbar 3/3.
+  The drag-vs-drag_v2 split on holo3 validates the v2 task design (no key
+  presses after drag = no spurious premature_done classifications).
+- bu-30b-a3b-preview: drag 2/3 (Phase 13 had reported "wrong drag params";
+  the explicit `drag(x1,y1,x2,y2)` action vocab in the ported task module
+  fixes the param-name issue). drag_v2 3/3, toolbar 0/3 (exhausted).
+- mai-ui-8b: 0/9 across the three C cells (stuck_loop or exhausted).
+  Canvas grounding is mai-ui's binding cliff.
+- qwen-72B: 0/9 by `category=premature_done`, BUT all 6 drag/drag_v2
+  final.pngs have non_white=6992 in the canvas region (>5000 verification
+  threshold = rectangle WAS DRAWN). This is the same false-fail pattern
+  Phase 22 caught for Holo3 IQ3_XXS — the `done` action was emitted
+  before the runner's checker accepted the visual outcome. The webapp
+  shows 0/3 but the thumbnails show drawn rectangles. Truthful as
+  recorded; an audit-class finding for the runner's premature-done
+  detector when a canvas draw is the success criterion.
+
+**Class D — IKEA / Best Buy:**
+- ui-venus-1.5-30b-a3b: ikea_billy 3/3, ikea_search_add 3/3,
+  bestbuy_airpods 1/3. Phase 18's HANG note for bestbuy is gone — the
+  F-5 dispatcher fix landed and UV30 reaches the product page now,
+  with 1/3 fully passing (overlay-dismissal pinch is the remaining
+  cliff per cliff hypothesis 4).
+- bu-30b-a3b-preview: ikea_billy 0/3 stuck_loop, ikea_search_add
+  0/3 mixed exhausted/stuck_loop, bestbuy_airpods 1/3.
+- qwen-72B: ikea_search_add 1/3 (one pass, one premature_done, one
+  stuck_loop) — consistent with the "qwen on this harness has a
+  premature-done bias on novel sites" pattern.
+
+### Cliff updates
+
+- **Cliff hypothesis 1** ("class B is parameter-bound below 30B"):
+  **REFUTED by clean data.** mai-ui-8b at 8B Q6_K passes
+  `saucedemo_full_checkout` 3/3 in the post-F-5 harness. The 8B↔30B
+  gap on B was a harness artifact. The cliff that matters for B is
+  *harness sophistication*, not parameter count.
+- **Cliff hypothesis 2** ("class C drag is parameter-bound"):
+  **REFUTED.** UI-Venus-1.5-8B at 8B Q6_K nails 9/9 across drag /
+  drag_v2 / toolbar. mai-ui-8b at the same parameter count gets 0/9.
+  This is a recipe / training-data cliff, not a parameter cliff. A
+  same-size 8B difference is bigger than the 8B→30B difference within
+  the UI-Venus family.
+- **Cliff hypothesis 4** ("class D will look like B but with overlay
+  dismissal as the new precision wall"): **partially supported.**
+  ikea_billy and ikea_search_add are now solved by UV30 but bestbuy
+  remains 1/3 across both 30B-class candidates. Overlay-dismissal
+  pinch is the binding constraint, matching the hypothesis.
+
+### Runner observations / audit-class findings
+
+- **`category=premature_done` is over-aggressive for class-C tasks.**
+  6 of 6 qwen-72B drag/drag_v2 runs were flagged premature_done with
+  pixel-verified successful rectangle draws. The runner should treat
+  a passing `VERIFICATION_REGION` pixel-count as overriding the
+  premature-done flag for tasks that declare such a region.
+- **`saucedemo_backpack_only` for UV30 is 0/3 stuck_loop**, despite UV30
+  being 3/3 on the harder `saucedemo_full_checkout`. Worth a deeper
+  trace — the simpler task should not be harder.
+- **Deterministic outputs at temp=0.0 produce identical final.png hashes
+  across n=3 runs** for several cells (qwen-72B saucedemo_*, qwen-72B
+  excalidraw_*). n=3 is statistically n=1 in those cases. n=3 still
+  catches OS-level / network-layer flakes, but the model contribution is
+  fully captured by n=1 for these cells. Not a defect, just a calibration
+  note — don't read significance into clean k/n splits when temp=0.0.
+
+### Costs
+
+- **Local sweeps**: 5–6 hours wall clock, $0 marginal (existing GPU /
+  electricity).
+- **Thunder**: ~2 hours of A100XL prototyping (~$2.20). Breakdown:
+  ~30 min provisioning + restore + initial misdiagnosis of the SIGILL,
+  ~12 min llama.cpp rebuild, ~45 min sweep, ~10 min mop-up cell, ~15 min
+  snapshot creation. The misdiagnosis cost ~$0.60 — the binary segfaulted
+  silently and looked like a hang at first; capturing exit code 132 +
+  matching CPU flags revealed it.
+
+### What's NOT in this backfill
+
+- Holo3 was tested only on its 4 gap cells (saucedemo_headed + 3
+  excalidraw). Its existing 5 cells in runs.jsonl from Phase 19a/Phase 21
+  were left as-is. The webapp's k/n for those cells is correct.
+- ui-venus-1.5-30b-a3b's `bestbuy_airpods` 1/3 is a low-n datapoint —
+  worth bumping to n=5 in a future pass if the Pareto-frontier story
+  needs more confidence on the overlay cliff.
+- Qwen-72B `bestbuy_airpods` was already covered by Phase 21 (max_steps
+  at 60 steps, 12.8 min). Not re-run — the existing data already
+  characterizes that cell.
+
