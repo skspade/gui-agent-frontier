@@ -82,6 +82,78 @@ grounding-heavy work.
   - `/mnt/data/models/holo1.5-7b/` (Phase 13 — Q6_K, ~6GB; retired from
     registry 2026-04-30, weights kept)
 
+## Thunder cloud (alternate inference path)
+
+When the local 16 GB VRAM ceiling is the binding constraint (parameter-cliff
+probes into 30B/70B), `llama-server` runs on a Thunder Compute GPU instead.
+**Browser-use stays local**; an SSH tunnel (`localhost:8080` ←
+`thunder:8080`) makes the smoke runner agnostic — `smoke_browser_use.py`
+needs no changes and `MODEL=<alias>` still parameterizes which remote model
+it talks to.
+
+- **Harness**: `scripts/thunder/`
+  - `bootstrap_instance.sh` — one-shot setup on a fresh instance (apt +
+    llama.cpp CUDA build + GGUF downloads). Idempotent; safe to interrupt
+    and resume. `SKIP_72B=1` skips the 47 GB Qwen pull.
+  - `swap_model_remote.sh <ssh_alias> <model> [quant]` — remote analogue of
+    `scripts/swap_model.sh`. Writes a wrapper script then (re)starts in a
+    fixed `llamasrv` tmux session; polls `/health` over SSH up to 180 s.
+    Per-model quant defaults mirror the local F-7 fix.
+  - `sweep.py --ssh <alias> --task <smoke>` — orchestrator. Pre-flight
+    refuses if local 8080 is occupied. Per cell: swap → tunnel → smoke →
+    archive `swap.log` + `smoke.log` + `final.png` to
+    `data/sweeps/<run_id>/<model>_<quant>/`. Drops `summary.json`.
+  - `validate_harness.py` — pre-sweep sanity check. Drives one synthetic
+    step through the configured harness against whatever model is
+    currently loaded, prints the parsed Action, exits non-zero on parse
+    error or coord-space mismatch. **Run this after every swap before
+    starting a multi-cell sweep** — Phase 21 wasted ~$0.50 of A100 time
+    on three iterations because we shipped a new harness without dry-run
+    verification.
+- **Default GPU class**: `a100xl_x1_prototyping`, 8 vCPU, 150 GB persistent
+  disk, template `cuda12-9`. ~$1.10/hr → ~$1.65–$2.20 per full-ladder
+  sweep including bootstrap. A6000 ($0.35/hr) OOMs Qwen-72B Q4_K_M (47 GB
+  weights, 48 GB VRAM); H100 typically `unavailable` in the prototyping
+  pool. Live cost/spec decisions live in
+  `docs/plans/*-thunder-cloud-handoff.md`.
+- **Provisioning gotchas** (from the 2026-04-30 first-run):
+  - `template=base` ships PyTorch's CUDA *runtime* only — `nvcc` is
+    missing. Use `cuda12-9` for the full toolkit. Even on cuda12-9, `nvcc`
+    is not on `ubuntu`'s default PATH; bootstrap auto-prepends
+    `/usr/local/cuda/bin`.
+  - **SSH user is `ubuntu`, not `root`.** The MCP's `get_ssh_command`
+    returns `root@…` (that's `tnr connect`'s per-instance key flow).
+    Org-level keys registered via `create_ssh_key` and passed as
+    `ssh_key_name` to `create_instance` land in
+    `/home/ubuntu/.ssh/authorized_keys`.
+- **Provisioning + teardown stay user-confirmable** under auto mode —
+  billing starts at RUNNING and no auto-teardown is wired into `sweep.py`.
+  After a sweep, restart the local service: `sudo systemctl start
+  vision-model.service`.
+- **Snapshot-then-delete is the default teardown.** Snapshot storage runs
+  ~$0.18/day for a 106 GB disk; restore takes ~8.5 min vs ~30 min to
+  re-bootstrap from scratch. `create_snapshot` requires the **UUID**, not
+  the integer instance_id (MCP tool description is wrong about this) —
+  see memory `feedback_thunder_snapshot_uuid.md`. Delete the snapshot
+  with `delete_snapshot` once you're sure no follow-up sweep is coming.
+- **Measured per-step latencies** (Phase 20/21, A100 80GB, Q4_K_M-ish
+  quants — use these for cost estimates, don't extrapolate from probe-
+  warmup throughput numbers):
+  - Cold-start (first request after a swap): ~50 s for kernel JIT +
+    CUDA graph warmup, regardless of model size.
+  - Holo3-35B-A3B IQ3_XXS warm: ~90 tok/s prompt, ~79 tok/s gen.
+  - Cart-task step on Qwen-72B Q4_K_M (screenshot + scroll-probe + 32K
+    context): **~10–15 s/step** end-to-end. `bestbuy_airpods` at
+    `MAX_STEPS=60` took 12.8 min wall-clock.
+  - Swap latency, cold disk: 100 s (14 GB Holo3 IQ3_XXS) → 300+ s (47 GB
+    Qwen-72B). Warm OS page cache: ~44 s for the same Qwen-72B.
+- **When `swap_model_remote.sh` reports timeout**, tail
+  `ssh thunder 'tail -40 /tmp/llama.log'` *first* before retrying. The
+  failure mode might be "still loading past the ceiling" (just bump the
+  timeout or wait) vs "cudaMalloc failed: out of memory" (real OOM, often
+  fragmentation from a prior model — wait for nvidia-smi to show clean
+  state, then retry). Don't redo the swap blind.
+
 ## Browser-use smoke tests
 
 `scripts/smoke_browser_use.py` is the runner; each smoke payload (TASK +

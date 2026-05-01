@@ -3121,3 +3121,226 @@ frontier table** — pass rate isn't the only metric.
   also noise — Holo3's one Phase 19a stuck_loop on this task is unusual
   given Phase 19's clean 3/3, but a single bad run from a 35B model is
   within expected variance.
+
+## 2026-04-30 — Phase 20: Thunder cloud sweep — Holo3 quant ladder + Qwen-72B on excalidraw_drag
+
+First time off-box for inference. `llama-server` ran on a Thunder Compute
+A100 80GB (`a100xl_x1_prototyping`, $0.78/hr GPU + $0.24 vCPU + $0.075 disk
+= ~$1.10/hr) while browser-use stayed local; SSH tunnel made `localhost:8080`
+the abstraction. Harness lives in `scripts/thunder/{bootstrap_instance,
+swap_model_remote}.sh + sweep.py`. Background and design are in
+`docs/plans/2026-04-30-thunder-cloud-handoff.md`.
+
+Run id `20260430-212754`, raw artifacts under
+`data/sweeps/20260430-212754/`. Total billable time including bootstrap +
+sweep + manual recovery: ~2h on the A100 ≈ $2.20.
+
+### Cell-fills (excalidraw_drag, n=1)
+
+| Model | Quant | rc | Visual | Steps | Notes |
+|---|---|---|---|---|---|
+| `holo3-35b-a3b` | IQ3_XXS (14 GB) | 0 | **❌ FAIL** | 4 | Empty canvas. Confabulated success — agent reported specific (false) coordinates 700,400→1100,600 with confident step narrative. |
+| `holo3-35b-a3b` | Q4_K_M (21 GB) | 0 | ✅ pass | 3 | Rectangle drawn + selected. |
+| `holo3-35b-a3b` | Q6_K (28 GB) | 0 | ✅ pass | 5 | Rectangle drawn + selected. |
+| `qwen2.5-vl-72b-instruct` | Q4_K_M (47 GB) | 0 | ✅ pass | 4 | Rectangle drawn + selected. Manual recovery (see Surprised). |
+
+### Cliff finding
+
+For Holo3-35B-A3B on `excalidraw_drag` (class C, single drag-coord task),
+**the quant cliff sits between IQ3_XXS and Q4_K_M.** At IQ3_XXS the model
+loses the ability to verify its own visual state; the agent's
+self-confirmation step false-positives on a blank canvas. Q4_K_M is the
+minimum viable quant for this task class on this model size.
+
+This is n=1 — Tier-3 evidence only. Worth re-running at n=3 to confirm the
+IQ3_XXS failure is reproducible vs. a single-run unlucky pass-as-fail.
+But the failure mode (specific-but-fake coordinate report, ~30 word
+narrative, blank canvas) is exactly the failure shape we'd predict from
+"vision encoder still works, language head can no longer ground language
+in vision."
+
+### Worked
+
+- All four GGUFs loaded on the A100. Qwen-72B Q4_K_M fit at 44.5 GB CUDA0
+  buffer + KV cache, well under the 80 GB VRAM ceiling.
+- Browser-use ran unchanged against the remote `llama-server` via SSH
+  tunnel. The hardcoded `SERVER_URL = "http://localhost:8080/v1"` keeps
+  working because `sweep.py` owns the per-cell tunnel.
+- Per-cell `swap.log` + `smoke.log` + `final.png` archive worked. Final
+  PNG is the source of truth for visual verification — relying on
+  `smoke_returncode=0` alone would have shipped IQ3_XXS as a pass.
+- Throughput on Holo3 IQ3_XXS warm: ~90 tok/s prompt processing, ~79
+  tok/s generation. (35B-A3B is 3B active params, so this is not
+  unreasonable for A100 + IQ3_XXS even with the small file.)
+
+### Broke
+
+- `swap_model_remote.sh`'s 180s `/health` ceiling was insufficient for
+  Qwen-72B Q4_K_M's 47 GB GGUF + 44.5 GB CUDA buffer mmap. Cell 4 was
+  marked `swap_ok=false` in the auto-generated summary even though
+  the model came up healthy ~5 min after timeout. **Fixed**: bumped
+  ceiling to 600s (commit follows). Scaling: ~13 GB/min mmap budget,
+  comfortable for any GGUF in the registry.
+
+### Surprised
+
+- **First-request cold-start is real and large.** Holo3 IQ3_XXS first
+  inference: 51.7 s for 40 prompt tokens (kernel JIT + CUDA graph
+  warmup). Second request 442 ms (~90 tok/s). Each cell pays this once;
+  amortizes across browser-use's many requests per smoke.
+- **Confabulation is detailed and specific, not vague.** The IQ3_XXS
+  agent didn't just say "task done" — it manufactured a 5-step report
+  with exact coordinates and modifier-key sequences that never happened.
+  This argues for an automated post-smoke pixel-diff check rather than
+  trusting `rc=0` alone, or at minimum a "agent's claim vs canvas
+  state" reconciliation step in the smoke runner.
+- **Provisioning surprises** (folded into `CLAUDE.md > Thunder cloud`):
+  Thunder's `template=base` ships PyTorch's CUDA runtime only, not
+  `nvcc`; needed `cuda12-9` for the full toolkit. SSH user is `ubuntu`,
+  not `root`, even though MCP's `get_ssh_command` returns the `root@`
+  form (that's `tnr connect`'s per-instance key flow). Org-level keys
+  via `create_ssh_key` land in `/home/ubuntu/.ssh/authorized_keys`.
+
+### Configuration deltas vs the plan
+
+- Template was changed from `base` → `cuda12-9` before provisioning.
+- SSH config on this machine is a home-manager-managed Nix store
+  symlink — replaced with a real file to add `Host thunder`. Reversible
+  via `home-manager switch`. Memory entry added.
+
+### Next
+
+- Per-cell auto pixel-diff (cheap canvas non-white ratio) to catch
+  confabulations without manual inspection.
+- Re-run Holo3 IQ3_XXS at n=3 to confirm the failure is reproducible
+  before treating "IQ3_XXS is below the cliff" as durable.
+- Consider adding `excalidraw_drag` to the local 8B baseline matrix to
+  lock in the apples-to-apples comparison; right now we have local 8B
+  on visual-grounding tasks but not on this exact drag prompt.
+
+## 2026-04-30 — Phase 21: Cart suite on Qwen-72B (parameter-cliff probe vs Phase 19 baseline)
+
+Same Thunder A100 instance, swapped to `qwen2.5-vl-72b-instruct` Q4_K_M.
+Goal: same harness as Phase 19 (custom CDP agent), only the model
+changes — does the parameter step from 30B-A3B-class to 72B-dense fix
+the regression cells where local Phase 19 saw 0/9 or large variance?
+
+Run id `20260430-cart-qwen72b`, n=1 per task (Tier-3 evidence).
+
+### Results (n=1)
+
+| Task | Outcome | Steps | Visual / cart-state | vs Phase 19 baseline |
+|---|---|---|---|---|
+| `saucedemo_full_checkout` | stuck_loop | 12 | ❌ login + sort succeeded; cart never populated. Final canvas shows products page, cart count=0. | Phase 19a Holo3 hit 1/3; Qwen-72B got further (login + sort) but stuck on the same add-to-cart pinch. |
+| `ikea_billy` | done | 10 | ✅ cart_state probe confirmed count=0→1. Final canvas shows BILLY product page mid-add. | Phase 19a Holo3 swung 1/3 → 3/3; Qwen-72B clears it cleanly. |
+| `bestbuy_airpods` | max_steps_reached | 60 | ❌ search→results→product page reached (AirPods Pro 3); 56 consecutive scrolls looking for Add-to-Cart, infinite oscillation y=0↔600. cart count=0. | Phase 19 was 0/9 across all local models; Qwen-72B got *closer* (reached the product page, which no local model did) but still didn't commit add-to-cart. |
+
+### Cliff finding
+
+Stepping from 30B-A3B (the local class) to 72B-dense moves the cliff
+**only on the navigation/search axis**, not on add-to-cart commit:
+
+1. **IKEA-class (search-and-add on a clean DOM):** parameter-bound. 70B
+   clears it where 30B-A3B was at noise-level swings.
+2. **SauceDemo-class (small DOM, requires precise per-item targeting):**
+   not parameter-bound at this rung. Qwen-72B logged in and sorted but
+   then locked onto the cart icon in the header (1228-1232, 94) and
+   tried to click it five times instead of the per-item "Add to cart"
+   buttons that are clearly visible on the page.
+3. **BestBuy-class (heavy modal/iframe traffic):** not parameter-bound.
+   The 70B can find AirPods Pro 3 via search and click into the
+   product page — meaningful improvement over Phase 19's 0/9 — but the
+   final add-to-cart action loses to the same iframe overlay /
+   unpredictable-scroll wall that local models hit. **Confirms
+   Phase 19a's prioritization: preflight modal/overlay cleanup
+   (Priority 2) is the right next investment, not bigger models.**
+
+### Worked
+
+- The `qwenvl` harness path (added this phase) parses Qwen2.5-VL's
+  native computer-use JSON format from message body and emits
+  `click_at` (pixel-space) so the dispatcher's 0-1000 grounding remap
+  doesn't fire. Once that was right, Qwen-72B drove real cart flows
+  via the same dispatcher hooks all other harnesses use.
+- The dispatcher's existing resilience (cart_state probe, scroll-fallback,
+  CDP→JS click for `<select>` overlays) all kicked in correctly under
+  the new harness without modification. The harness work was purely
+  encode/decode; everything below it stayed put.
+- IKEA succeeded in 10 steps with cart_state confirmation — exactly the
+  cell where Phase 19a's tooling was supposed to help, and it did.
+
+### Broke
+
+- **Initial plan was to use the existing `toolcall` harness for Qwen.**
+  Qwen2.5-VL-72B ignores OpenAI `tools=[...]` and `tool_choice="required"`
+  entirely, emits its trained format directly in `message.content`:
+  `{"action": "click", "coordinate": [x, y]}`. All 3 tasks parse-errored
+  at step 0. The fine-tuning overrides the chat template's tool-call
+  emission. Fix: new `qwenvl` harness in
+  `scripts/custom_agent/qwenvl.py` that parses content directly. **Don't
+  assume `--jinja` makes a fine-tuned model emit tool_calls.**
+- **First attempt at `qwenvl` emitted `click` instead of `click_at`.**
+  The dispatcher applies `grounding_remap` (0-1000 → viewport) on
+  `click` actions, which rescaled (550, 186) → (678, 230) and missed
+  every target. SauceDemo went stuck_loop with all 5 actions reporting
+  `no page change`. Fix: emit `click_at` so the dispatcher treats the
+  coords as already in pixel space.
+- **CUDA OOM on the first swap from Holo3 Q6_K → Qwen-72B Q4_K_M**
+  even though the previous Qwen-72B load (sweep cell 4) succeeded.
+  `cudaMalloc` failed for the 44.5 GB model buffer despite
+  `nvidia-smi` showing 80 GB free moments later. Cause: the prior
+  llama-server's tmux teardown didn't fully release GPU memory by the
+  time the new server's allocation request arrived (5 s wait between
+  kill and start was insufficient under fragmentation). Workaround:
+  re-running the swap script from the now-clean GPU state succeeded in
+  44 s. Should bump the inter-swap settle window in
+  `swap_model_remote.sh` if this recurs.
+
+### Surprised
+
+- **Qwen-72B's failure mode on SauceDemo is misclassification, not
+  grounding.** The screenshots show the products page clearly with
+  per-item "Add to cart" buttons. The model still picked the cart icon
+  in the header. The 70B didn't fail at *seeing* — it failed at
+  *deciding what to click*. That's task understanding, not visual
+  grounding capacity, and it's not something more parameters fix.
+- **Best Buy's iframe wall is genuinely model-agnostic.** Local
+  Holo3-35B-A3B at 0/9 and Qwen-72B at 0/1 both hit the same scroll
+  oscillation pattern on the product page. The dispatcher's
+  scroll-fallback (which flips sign when no progress is made) actually
+  *prevented* the stuck-loop early-out from firing here — both
+  directions produce y movement when the model alternates them, even
+  though the model is stuck.
+- **Per-step latency on Qwen-72B is ~12-15 s, not the 3-5 s
+  extrapolated from Phase 20's warm-throughput numbers.** Cart-task
+  steps include scroll-probe + viewport-fitted screenshot encoding +
+  32K-context vision request. bestbuy_airpods alone took 12.8 minutes
+  (60 × ~13 s/step). Future cost estimates for cart sweeps should
+  use ≥10 s/step.
+
+### Configuration deltas vs the plan
+
+- Added `scripts/custom_agent/qwenvl.py` (new harness path).
+- Updated `scripts/custom_agent/__init__.py` registry:
+  `qwen2.5-vl-72b-instruct → qwenvl`.
+- Updated `scripts/custom_agent.py` dispatcher to import and call
+  `navigate_step_qwenvl` when `HARNESS == "qwenvl"`.
+- No `swap_model_remote.sh` changes this phase (the OOM was a one-off
+  recovered by retry; if it recurs, bump the inter-swap settle window).
+
+### Next
+
+- **Preflight modal/overlay cleanup (Phase 19a Priority 2)** is now
+  validated as the right next investment for Best Buy. Tier-3 evidence
+  here, but consistent with Phase 19's 0/9 across the local registry —
+  the wall isn't model size.
+- Re-run `bestbuy_airpods` with explicit "scroll to bottom of page if
+  Add to Cart not visible" hint in the task prompt, n=3, to separate
+  "model can't find the button" from "model can't navigate to it under
+  the iframe overlay." Cheap follow-up that disambiguates the
+  Phase 19/21 failure attribution.
+- Consider running the saucedemo regression at n=3 on Qwen-72B —
+  Phase 19a Holo3 had 1/3 noise on this exact task, and the n=1 here
+  showing stuck_loop on cart-icon-mistake could be a single-run bad
+  draw. If Qwen-72B is consistently worse than Holo3 here, that's a
+  task-understanding regression worth recording.
