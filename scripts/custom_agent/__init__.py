@@ -15,6 +15,7 @@ MODEL_HARNESS_REGISTRY = {
     "holo3-35b-a3b": "holo3",
     "mai-ui-8b": "toolcall",
     "bu-30b-a3b-preview": "toolcall",
+    "qwen2.5-vl-72b-instruct": "qwenvl",
 }
 
 

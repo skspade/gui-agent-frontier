@@ -41,6 +41,9 @@ from scripts.custom_agent.site_configs import match_site_config
 #   toolcall - Hermes-style <tool_call> emitter; covers models that ignore
 #              UI-Venus's <action> schema and revert to native tool calling
 #              when asked to commit a click (MAI-UI-8B, bu-30b-a3b-preview).
+#   qwenvl   - Qwen2.5-VL native computer-use JSON-in-content emit. Phase
+#              21 found Qwen-VL ignores tools=[...] and writes its trained
+#              `{"action":..., "coordinate":[x,y]}` format in message body.
 #
 # `HARNESS=` env overrides the registry so cross-protocol experiments stay
 # possible.
@@ -87,14 +90,17 @@ async def run(task_module) -> None:
 
         navigate_step_holo3 = None
         navigate_step_toolcall = None
+        navigate_step_qwenvl = None
         if HARNESS == "holo3":
             from scripts.custom_agent.holo3 import navigate_step_holo3
         elif HARNESS == "toolcall":
             from scripts.custom_agent.toolcall import navigate_step_toolcall
+        elif HARNESS == "qwenvl":
+            from scripts.custom_agent.qwenvl import navigate_step_qwenvl
         elif HARNESS != "uivenus":
             raise SystemExit(
                 f"unknown HARNESS={HARNESS!r}; expected one of "
-                "uivenus / holo3 / toolcall"
+                "uivenus / holo3 / toolcall / qwenvl"
             )
 
         for step_idx in range(task_module.MAX_STEPS):
@@ -109,6 +115,10 @@ async def run(task_module) -> None:
                     )
                 elif HARNESS == "toolcall":
                     action = navigate_step_toolcall(
+                        task_module.TASK, history, b64, viewport
+                    )
+                elif HARNESS == "qwenvl":
+                    action = navigate_step_qwenvl(
                         task_module.TASK, history, b64, viewport
                     )
                 else:
