@@ -39,6 +39,35 @@ grounding-heavy work.
 - Smoke / task modules carry a `TASK_CLASS` constant ("A" / "B" / "C"
   / "D") matching the taxonomy in `docs/thesis.md`.
 
+## Findings webapp
+
+Public read-only view of the frontier matrix is served from GitHub
+Pages: **https://skspade.github.io/gui-agent-frontier/**.
+
+- **Source**: hand-curated `web/config.yaml` (model order, tests
+  grouped by class, intro paragraph). `web/app.js` and `web/styles.css`
+  are committed; `web/index.html` and `web/screenshots/` are
+  gitignored build artifacts.
+- **Build**: `.venv/bin/python scripts/build_site.py` → reads
+  `data/runs.jsonl` + `data/sweeps/*/summary.json` + `web/config.yaml`,
+  emits `web/index.html` with the payload inlined. Aggregator and
+  screenshot resolver are tested under `tests/build_site/`.
+- **Deploy**: `bash scripts/deploy_site.sh` → syncs `web/` into a temp
+  worktree on the `gh-pages` branch, commits, pushes. Auto-bootstraps
+  the orphan branch on first run. Don't delete or rebase `gh-pages` —
+  it's the deploy target and has unrelated history from `main`.
+- **Pass criterion** (mirrors `runs.jsonl`): `category == "pass"`,
+  falling back to `outcome ∈ {"done", "call_user"}` for legacy rows
+  missing `category`. Encoded once in `build_site._is_pass` and
+  emitted as a per-run `pass: bool` to keep JS and Python in sync.
+- **Side panel is mostly thumbnail-less today** because most legacy
+  `runs.jsonl` rows reference `/tmp/custom_agent_final.png` (ephemeral
+  — overwritten by the next smoke). Resolver correctly skips `/tmp/*`
+  paths. New smokes should write durable per-run `summary.json` +
+  `final.png` under `data/sweeps/<sweep_id>/<task>/<model>_<quant>/run-N/`
+  (the schema `scripts/thunder/sweep.py` already emits) so the side
+  panel populates. Backfill is tracked as **C-3** in `docs/backlog.md`.
+
 ## Inference server
 
 - **Service**: `vision-model.service` (systemd, runs as user `seans`).
