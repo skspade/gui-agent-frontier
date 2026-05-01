@@ -237,6 +237,26 @@ A smoke module exposes module-level constants: `TASK` (required),
   agent self-reports cannot be trusted (we caught a Google Maps confabulation
   this way).
 
+- **Automated pixel-check verification (Phase 22)**: smoke modules can
+  expose `VERIFICATION_REGION = (x0, y0, x1, y1)` and
+  `VERIFICATION_MIN_NON_WHITE = N` constants. `scripts/thunder/sweep.py`
+  crops `final.png` to that region, counts pixels with any RGB channel
+  < 245, and emits `final_non_white_px` + an optional
+  `verification_warning` in `summary.json` when the count is below
+  threshold. Catches the Phase 20 failure mode (visibly-blank canvas
+  with rc=0, or off-viewport "PASS" screenshots) without manual
+  review. `excalidraw_drag.py` and `excalidraw_drag_v2.py` use this;
+  pattern generalizes to any task where success has a known visual
+  signature in a known region.
+
+- **Qwen2.5-VL family treats post-drag `Escape` as "I'm done"** and
+  shifts the viewport. Phase 20's Qwen-72B `excalidraw_drag` "PASS"
+  was actually rectangle-drawn-then-scrolled-off-viewport. Use
+  `excalidraw_drag_v2.py` for any Qwen-family canvas re-test — it
+  explicitly forbids keyboard input after the drag and removes the
+  misleading "capture a screenshot" instruction that triggers the
+  Escape behavior.
+
 ## Operational rules learned the hard way
 
 1. **Privileged operations: write to `/tmp/foo.sh`, invoke as
