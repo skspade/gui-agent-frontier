@@ -21,8 +21,7 @@ from scripts.custom_agent.model import Action
 VIEWPORT = (1280, 800)
 
 
-def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+_run = asyncio.run
 
 
 def test_click_kind_applies_grounding_remap():
@@ -61,8 +60,10 @@ def test_click_then_type_bypasses_grounding_remap():
                     raw="write_element(640,400,'hello')")
     page = object()
     with patch("scripts.custom_agent.actions._click", new=AsyncMock()) as mck_click, \
-         patch("scripts.custom_agent.actions._type_keys", new=AsyncMock()):
+         patch("scripts.custom_agent.actions._type_keys", new=AsyncMock()) as mck_type:
         _run(dispatch(page, action, VIEWPORT))
         _, x, y = mck_click.await_args.args
         assert (x, y) == (640, 400), \
             f"'click_then_type' must bypass remap (same reason as click_at); got ({x},{y})"
+        assert mck_type.await_args.args[1:] == ("hello",), \
+            f"'click_then_type' must forward text to _type_keys; got {mck_type.await_args}"
