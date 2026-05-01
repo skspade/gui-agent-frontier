@@ -160,11 +160,17 @@ it talks to.
   After a sweep, restart the local service: `sudo systemctl start
   vision-model.service`.
 - **Snapshot-then-delete is the default teardown.** Snapshot storage runs
-  ~$0.18/day for a 106 GB disk; restore takes ~8.5 min vs ~30 min to
-  re-bootstrap from scratch. `create_snapshot` requires the **UUID**, not
-  the integer instance_id (MCP tool description is wrong about this) —
-  see memory `feedback_thunder_snapshot_uuid.md`. Delete the snapshot
-  with `delete_snapshot` once you're sure no follow-up sweep is coming.
+  ~$0.18/day for a 150 GB disk; restore from snapshot takes **~12–22 min
+  for 150 GB** (highly variable with cluster load — Phase 22 hit 22 min
+  on the upper end, Phase 20's docs guess of ~8.5 min/100 GB underestimates
+  busy-day restores). Re-bootstrap from `cuda12-9` is ~30 min including
+  GGUF re-downloads, so snapshot is still the right default. Snapshot
+  *creation* takes another ~10–15 min for 150 GB while the instance keeps
+  running and billing — wait for `READY` before deleting the source
+  instance. `create_snapshot` requires the **UUID**, not the integer
+  instance_id (MCP tool description is wrong about this) — see memory
+  `feedback_thunder_snapshot_uuid.md`. Delete the snapshot with
+  `delete_snapshot` once you're sure no follow-up sweep is coming.
 - **Measured per-step latencies** (Phase 20/21, A100 80GB, Q4_K_M-ish
   quants — use these for cost estimates, don't extrapolate from probe-
   warmup throughput numbers):
