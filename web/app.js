@@ -80,3 +80,73 @@ function renderIntro() {
 }
 
 document.getElementById("app").innerHTML = renderIntro() + renderMatrix();
+
+const panel = document.getElementById("panel");
+const lightbox = document.getElementById("lightbox");
+
+function openPanel(modelId, testId) {
+  const model = data.models.find(m => m.id === modelId);
+  const test = Object.values(data.tests).flat().find(t => t.id === testId);
+  const cell = cellMap.get(modelId + "::" + testId);
+  if (!cell) return;
+  const runs = cell.runs.map(r => {
+    const passClass = r.category === "pass" ? "pass" : "fail";
+    const passLabel = r.category || r.outcome || "?";
+    const ts = (r.ts || "").replace("T", " ").slice(0, 16);
+    const steps = r.steps != null ? `${r.steps} steps` : "";
+    const elapsed = r.elapsed_s != null ? `${r.elapsed_s.toFixed(1)}s` : "";
+    const thumb = r.screenshot
+      ? `<img class="thumb" src="${escape(r.screenshot)}" data-full="${escape(r.screenshot)}" alt="final screenshot">`
+      : `<div class="meta">(no screenshot available)</div>`;
+    return `
+      <div class="run">
+        <div class="meta">
+          <span class="${passClass}">${escape(passLabel)}</span>
+          <span>${escape(ts)}</span>
+          <span>${escape(steps)}</span>
+          <span>${escape(elapsed)}</span>
+          <span>${escape(r.harness || "")}</span>
+        </div>
+        ${thumb}
+      </div>`;
+  }).join("");
+  panel.innerHTML = `
+    <button class="close" aria-label="Close">×</button>
+    <h2>${escape(model.label)} × ${escape(test.label)}</h2>
+    <div class="agg">${cell.k}/${cell.n} pass · n=${cell.n}</div>
+    ${runs}`;
+  panel.hidden = false;
+}
+
+function closePanel() { panel.hidden = true; }
+function openLightbox(src) {
+  lightbox.innerHTML = `<img src="${escape(src)}" alt="full screenshot">`;
+  lightbox.hidden = false;
+}
+function closeLightbox() { lightbox.hidden = true; lightbox.innerHTML = ""; }
+
+document.addEventListener("click", (e) => {
+  const cellEl = e.target.closest("td.cell");
+  if (cellEl) {
+    openPanel(cellEl.dataset.model, cellEl.dataset.test);
+    return;
+  }
+  if (e.target.matches("aside#panel button.close")) {
+    closePanel();
+    return;
+  }
+  if (e.target.matches("aside#panel img.thumb")) {
+    openLightbox(e.target.dataset.full);
+    return;
+  }
+  if (e.target.closest("#lightbox")) {
+    closeLightbox();
+    return;
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!lightbox.hidden) closeLightbox();
+  else if (!panel.hidden) closePanel();
+});
