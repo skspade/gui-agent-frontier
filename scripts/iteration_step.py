@@ -81,7 +81,10 @@ def _decide_and_act(*, iteration: int, before_path: Path, after_path: Path,
         verdict = "REGRESSION"
 
     if verdict in ("GREEN", "PARTIAL"):
-        _git(["add", "-A"], workdir)
+        # Scope git add to match the revert-clean scope below — keeps
+        # IDE/watcher writes out of iteration commits during the race
+        # window between add and commit.
+        _git(["add", "scripts/", "tests/", "docs/", "prompts/"], workdir)
         msg = f"iter {iteration}: {hypothesis} [+suite {verdict.lower()}]"
         _git(["commit", "-m", msg], workdir)
         sha = _git(["rev-parse", "--short", "HEAD"], workdir)
@@ -91,7 +94,11 @@ def _decide_and_act(*, iteration: int, before_path: Path, after_path: Path,
         diff_path = before_path.parent / f"iter_{iteration}.diff"
         diff_path.write_text(_git(["diff"], workdir))
         _git(["checkout", "--", "."], workdir)
-        # Clean only files in the harness scope; preserve unrelated untracked.
+        # Clean covers tests/, docs/, prompts/ in addition to scripts/ — the LLM
+        # is restricted to scripts/* by the prompt + tool whitelist, but if it
+        # escaped scope, untracked files in any of these dirs are LLM-authored
+        # and should be removed. Out-of-scope dirs (data/, web/, .venv/) are
+        # preserved.
         _git(["clean", "-fd", "scripts/", "tests/", "docs/", "prompts/"], workdir)
         outcome_line = f"reverted (verdict={verdict}); diff saved to {diff_path}"
 
@@ -100,6 +107,8 @@ def _decide_and_act(*, iteration: int, before_path: Path, after_path: Path,
         change_files=change_files, suite_delta_text=delta,
         outcome_line=outcome_line, invalidates=None,
     )
+    learnings_path.parent.mkdir(parents=True, exist_ok=True)
+    learnings_path.touch(exist_ok=True)
     with learnings_path.open("a") as f:
         f.write("\n" + block)
     return verdict
