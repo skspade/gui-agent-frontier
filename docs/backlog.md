@@ -386,6 +386,90 @@ exactly the kind of finding that needs a within-family control.
 
 ---
 
+## C-3 — Backfill thumbnails for the findings webapp by re-running smokes with durable summary.json
+**Effort: s · Priority: C · Cell: n/a (webapp data quality)**
+
+The findings webapp at `web/index.html` (built by `scripts/build_site.py`)
+shows an empty side panel for most runs because their screenshots were
+never persisted. Specifically:
+
+- ~118 rows in `data/runs.jsonl` record `final_screenshot=/tmp/custom_agent_final.png`,
+  which is overwritten by the next smoke. The build script (post-2026-05-01
+  fix in commit `2f5cd74`) correctly skips `/tmp/...` paths because they
+  used to silently produce 118 *identical* fake thumbnails.
+- The fallback in `build_sweep_index` only reads sweeps that have a
+  top-level `summary.json`. Today only the four excalidraw thunder sweeps
+  (`20260430-212754`, `20260501-010141`, `20260501-011125`, `20260501-011611`)
+  emit one. The two cart-task sweeps (`20260430-cart-qwen72b`,
+  `20260501-cart-qwen72b-phase22`) have durable per-run `final.png` files
+  under `<sweep_id>/<task>/run-N/final.png` but no `summary.json`, so the
+  resolver doesn't see them.
+
+Goal: re-run the smokes whose cells are missing thumbnails, producing
+per-run `summary.json` + durable screenshot paths so the webapp's side
+panel actually shows useful evidence.
+
+### Steps
+
+1. **Inventory the gaps.** Run `.venv/bin/python scripts/build_site.py`
+   and list the (model, test) cells whose runs all have `screenshot: null`
+   in `web/index.html`'s embedded payload. This is the backfill target
+   set. Today (2026-05-01) that's roughly all 19 non-empty cells —
+   Class A/B/D rows.
+2. **Pick a runner.** Two paths, in increasing order of cost:
+   - **Local re-run via `scripts/smoke_browser_use.py`** (preferred for
+     8B models that fit on the AMD 9070 XT). Currently writes
+     `/tmp/smoke_final.png` only; needs a small extension to also write
+     a `data/sweeps/<run_id>/<task>/<model>_<quant>/run-N/{final.png,summary.json}`
+     bundle that mirrors `scripts/thunder/sweep.py`'s output schema. ~30
+     LOC plus a `--archive-to <dir>` flag. Once that flag exists, the
+     existing smokes can be re-run end-to-end with no other changes.
+   - **Thunder sweeps via `scripts/thunder/sweep.py`** (required for
+     30B+ models that don't fit local VRAM). Already emits the right
+     schema. Cost: ~$1–2 of A100 time per full sweep. Provisioning +
+     teardown stay user-confirmable per `CLAUDE.md`.
+3. **Run the backfill.** For each gap cell, run n=3 of the smoke and
+   archive to `data/sweeps/<run_id>/...` with `summary.json`. Don't
+   conflate this with frontier re-measurement — these are *the same
+   smokes that already populated `runs.jsonl`*, just with persisted
+   screenshots.
+4. **Rebuild the site** (`.venv/bin/python scripts/build_site.py`) and
+   verify thumbnails populate the side panel for every cell that was
+   re-run. The pre-existing `runs.jsonl` rows are left untouched — the
+   resolver pairs new sweep entries to them via the existing fallback.
+5. **Update `docs/findings.md`** with one short paragraph noting the
+   backfill, the cells re-run, and any unexpected score drift (if a
+   replay produces a different pass rate, that's frontier-relevant
+   noise and worth flagging).
+
+### Acceptance
+
+- `web/index.html` rebuilds with ≥1 thumbnail visible per non-empty
+  cell in the backfill target set.
+- For any cell whose backfill score disagrees with the original
+  `runs.jsonl` score by ≥1 of n, the discrepancy is noted in
+  `docs/findings.md`.
+- If the local-runner extension was needed (option 2a above), the
+  `--archive-to` flag is documented in `CLAUDE.md`'s "Browser-use
+  smoke tests" section.
+
+### Don't
+
+- **Don't extend `build_sweep_index` to read sweep layouts that lack
+  `summary.json`.** That would add a second, undocumented schema and
+  embed a parser for run-log inference. The right fix is to make new
+  sweeps write `summary.json`, not to teach the consumer about every
+  legacy directory shape.
+- **Don't backfill cells you don't intend to keep on the frontier.**
+  If a cell is going to be retired (e.g. a model dropped from the
+  active registry), skip it — there's no point persisting evidence
+  for a row the matrix will eventually delete.
+- **Don't re-run sweeps as part of frontier re-measurement.** Backfill
+  is operational; cell-fills are experiments. Mixing them muddies
+  `findings.md`.
+
+---
+
 ## Open questions (not yet sized as work items)
 
 These are explicitly recorded as "things we don't know yet" rather than
