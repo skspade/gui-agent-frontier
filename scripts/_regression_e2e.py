@@ -3,15 +3,15 @@ separate module so importing the wrapper for unit-only mode does not
 drag in browser/Chromium dependencies."""
 from __future__ import annotations
 import os
+import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DISPLAY_ENV = {
     "DISPLAY": ":0",
-    "XAUTHORITY": "/run/user/1000/xauth_rVYaGJ",
+    "XAUTHORITY": os.environ.get("XAUTHORITY", "/run/user/1000/xauth_rVYaGJ"),
     "XDG_RUNTIME_DIR": "/run/user/1000",
     "PYTHONUNBUFFERED": "1",
 }
@@ -32,8 +32,12 @@ def run_mechanical_probe(log_path: Path) -> tuple[bool, float]:
     )
     dur = time.time() - t0
     log_path.write_text(proc.stdout + "\n--- STDERR ---\n" + proc.stderr)
-    last_lines = proc.stdout.strip().splitlines()[-5:]
-    ok = any("9/9" in l and "PASS" in l for l in last_lines)
+    ok = False
+    for line in proc.stdout.splitlines():
+        m = re.match(r"\s*(\d+)/(\d+) checkpoints PASS\s*$", line)
+        if m and m.group(1) == m.group(2):
+            ok = True
+            break
     return ok, dur
 
 
