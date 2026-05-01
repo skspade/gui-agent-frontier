@@ -1,13 +1,26 @@
 """Build the findings webapp into web/.
 
-Reads:
-  data/runs.jsonl                 — per-run records (source of truth for k/n).
-  data/sweeps/*/summary.json      — sweep results with per-run screenshot paths.
-  web/config.yaml                 — curated row/column ordering and labels.
+Usage
+-----
+    cd /home/seans/Source/vision-model
+    .venv/bin/python scripts/build_site.py
 
-Writes:
-  web/index.html                  — self-contained page with inlined data.
-  web/screenshots/<model>/<task>/<n>.png — copied from referenced paths.
+Then serve locally:
+
+    .venv/bin/python -m http.server --directory web 8000
+    # → http://localhost:8000
+
+Reads:
+    data/runs.jsonl              — per-run records (source of truth for k/n).
+    data/sweeps/*/summary.json   — sweep results with screenshot paths.
+    web/config.yaml              — curated row/column ordering and labels.
+
+Writes (gitignored):
+    web/index.html
+    web/screenshots/<model>/<task>/<n>.png
+
+Pass criterion: `category == "pass"`, falling back to
+`outcome ∈ {"done", "call_user"}` for legacy rows missing `category`.
 """
 
 from __future__ import annotations
