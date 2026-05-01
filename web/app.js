@@ -18,6 +18,17 @@ function cellColor(k, n) {
   return `hsl(${Math.round(120 * ratio)}, 60%, 78%)`;
 }
 
+const CLIFF_THRESHOLD = 0.7;
+
+function findCliffIndex(modelId, allTests) {
+  let lastPassIdx = -1;
+  allTests.forEach((t, idx) => {
+    const cell = cellMap.get(modelId + "::" + t.id);
+    if (cell && cell.n > 0 && cell.k / cell.n >= CLIFF_THRESHOLD) lastPassIdx = idx;
+  });
+  return lastPassIdx;
+}
+
 function renderHeader() {
   const classKeys = Object.keys(data.tests);
   const classRow = ["<th></th>"];
@@ -40,16 +51,21 @@ function renderRow(model) {
     `<th class="row-label">${escape(model.label)}<span class="params">${escape(model.params)}</span></th>`,
   ];
   const classKeys = Object.keys(data.tests);
+  const flatTests = classKeys.flatMap(cls => data.tests[cls]);
+  const cliffIdx = findCliffIndex(model.id, flatTests);
+  let absIdx = -1;
   classKeys.forEach((cls, i) => {
     data.tests[cls].forEach((t, j) => {
-      const cell = cellMap.get(model.id + "::" + t.id);
+      absIdx += 1;
       const sep = (j === 0 && i > 0) ? " band-sep" : "";
+      const cliff = absIdx === cliffIdx ? " cliff-edge" : "";
+      const cell = cellMap.get(model.id + "::" + t.id);
       if (!cell) {
-        tds.push(`<td class="empty${sep}">—</td>`);
+        tds.push(`<td class="empty${sep}${cliff}">—</td>`);
       } else {
         const bg = cellColor(cell.k, cell.n);
         tds.push(
-          `<td class="cell${sep}" style="background:${bg}" data-model="${escape(model.id)}" data-test="${escape(t.id)}">` +
+          `<td class="cell${sep}${cliff}" style="background:${bg}" data-model="${escape(model.id)}" data-test="${escape(t.id)}">` +
           `${cell.k}/${cell.n}<span class="n">·n=${cell.n}</span></td>`
         );
       }
