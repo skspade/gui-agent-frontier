@@ -19,6 +19,9 @@ def test_suite_wrapper_emits_valid_json_with_expected_keys(tmp_path):
     )
     assert proc.returncode in (0, 1), f"unexpected exit {proc.returncode}: {proc.stderr}"
     doc = json.loads((tmp_path / "suite.json").read_text())
+    assert proc.returncode == (0 if doc["all_green"] else 1), (
+        f"exit code {proc.returncode} doesn't match all_green={doc['all_green']}"
+    )
     assert set(doc.keys()) >= {"all_green", "duration_s", "tests"}
     assert isinstance(doc["all_green"], bool)
     assert isinstance(doc["duration_s"], (int, float))

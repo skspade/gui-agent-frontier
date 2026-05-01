@@ -44,10 +44,17 @@ UNIT_TESTS = {
 
 def _run_pytest(test_file: str, log_path: Path) -> tuple[bool, float]:
     t0 = time.time()
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", str(ROOT / test_file), "-v", "--tb=short"],
-        capture_output=True, text=True, timeout=120,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", str(ROOT / test_file), "-v", "--tb=short"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired as e:
+        # Write a structured marker so the iteration driver sees a clean fail row.
+        stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+        stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+        log_path.write_text(f"TIMEOUT after 120s\n{stdout}\n--- STDERR ---\n{stderr}")
+        return False, time.time() - t0
     dur = time.time() - t0
     log_path.write_text(proc.stdout + "\n--- STDERR ---\n" + proc.stderr)
     return proc.returncode == 0, dur
