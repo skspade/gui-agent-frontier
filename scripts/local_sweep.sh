@@ -25,6 +25,18 @@ SWEEP_ID="2026-05-01-frontier-backfill"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNS_FILE="$REPO_ROOT/data/runs.jsonl"
 
+# Pre-flight: fail fast if the task module doesn't exist for the runner this
+# wrapper drives (custom_agent.py loads from scripts/custom_agent_tasks/).
+# Without this, custom_agent.py fails per-run but the wrapper still loops
+# through n attempts — wastes time and clutters logs.
+TASK_FILE="$REPO_ROOT/scripts/custom_agent_tasks/${TASK}.py"
+if [[ ! -f "$TASK_FILE" ]]; then
+  echo "ERROR: task module not found: $TASK_FILE" >&2
+  echo "Available custom_agent tasks:" >&2
+  ls "$REPO_ROOT/scripts/custom_agent_tasks/"*.py 2>&1 | xargs -n1 basename | sed 's/\.py$//' >&2
+  exit 2
+fi
+
 if [[ -n "$QUANT" ]]; then
   sudo bash "$REPO_ROOT/scripts/swap_model.sh" "$MODEL" "$QUANT"
 else

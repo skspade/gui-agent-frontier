@@ -309,6 +309,38 @@ A smoke module exposes module-level constants: `TASK` (required),
 - **Use absolute paths in scripts invoked via sudo.** Sudoers entries
   match exact paths and don't expand `$PATH`; relative paths cause
   silent rule-misses that look like permission failures.
+- **`pkill -f <pattern>` matches against the bash command line including
+  the `pkill` invocation itself.** If the pattern can match your own
+  shell ("ssh -fN -L 8080" matches `bash -c "pkill -f 'ssh -fN -L 8080'"`)
+  the shell self-kills with exit 144 (SIGUSR1). Prefer `pgrep` to find
+  the PID, then `kill <PID>` to act on it specifically.
+
+## Long-running ops sweeps
+
+- **Sweeps that take >10 min total wall clock should run as background
+  bash + Monitor in the main session, NOT via subagent dispatch.**
+  Subagents have context budgets that get exceeded mid-run; Phase 22's
+  Phase 1 subagent died after 1/12 runs. The wrapper `scripts/local_sweep.sh`
+  is designed to be invoked directly: `bash scripts/local_sweep.sh <task>
+  <model> "" 3 > /tmp/phaseN.log 2>&1` in run_in_background mode, then
+  arm a Monitor on the log file watching for `^=== ` (cell start),
+  `^>>> ` (run start), `^WARN`, `outcome:`, `Traceback`. Same pattern
+  for `scripts/thunder_sweep.sh`.
+
+## Snapshot conventions (Thunder)
+
+- **Snapshot names should encode host CPU family** when the snapshot
+  includes a compiled binary (llama.cpp, etc.). Format:
+  `<purpose>-<YYYY-MM-DD>-<gpu>-<cpu>` — e.g.
+  `vision-model-2026-05-01-a100xl-amd`. The 2026-05-01 sweep restored
+  a snapshot built on Intel Xeon (AVX-512) onto an AMD EPYC instance
+  (AVX2 only); the bundled `llama-server` SIGILL'd silently. Marking
+  the CPU family in the name turns "rebuild needed?" into "look at the
+  name."
+- **Restored snapshots can carry build artifacts that crash on the new
+  host.** Verify `llama-server --help` exits 0 before sweeping —
+  `validate_harness.py` won't catch the SIGILL because it never gets
+  far enough.
 
 ## Stack reference (for setup repro)
 

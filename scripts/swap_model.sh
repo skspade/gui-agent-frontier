@@ -92,6 +92,15 @@ if ! grep -q -- "--chat-template-kwargs" "$UNIT"; then
     sed -i -E "/^\s*--jinja(\s|$|\\\\)/a\\    --chat-template-kwargs '{\"enable_thinking\":false}' \\\\" "$UNIT"
 fi
 
+# Idempotently ensure -fit off is present. llama.cpp build b1-a95a11e and
+# adjacent revisions deadlock/segfault at "common_params_fit_impl: getting
+# device memory data" on some host CPUs (caught on Thunder AMD EPYC); the
+# error message itself suggests the workaround. Harmless on builds that
+# don't have -fit (unrecognized-arg warning at most).
+if ! grep -q -- "-fit off" "$UNIT"; then
+    sed -i -E "/^\s*--jinja(\s|$|\\\\)/a\\    -fit off \\\\" "$UNIT"
+fi
+
 systemctl daemon-reload
 systemctl restart vision-model.service
 

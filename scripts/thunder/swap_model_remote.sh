@@ -68,6 +68,7 @@ exec "\$HOME/llama.cpp/build/bin/llama-server" \\
     --host 0.0.0.0 --port 8080 \\
     -ngl 99 -c 32768 \\
     --flash-attn on \\
+    -fit off \\
     --image-min-tokens 1024 \\
     --jinja \\
     ${EXTRA_ARGS} \\
