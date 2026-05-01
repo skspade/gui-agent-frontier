@@ -10,6 +10,11 @@ Then serve locally:
     .venv/bin/python -m http.server --directory web 8000
     # → http://localhost:8000
 
+Or deploy to GitHub Pages (gh-pages branch on origin):
+
+    bash scripts/deploy_site.sh
+    # → https://skspade.github.io/gui-agent-frontier/
+
 Reads:
     data/runs.jsonl              — per-run records (source of truth for k/n).
     data/sweeps/*/summary.json   — sweep results with screenshot paths.
