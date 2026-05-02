@@ -59,3 +59,29 @@ _OUTCOME_MAP = {
 
 def classify_failure(*, outcome: str, steps: int = 0, history_summary: str = "") -> str:
     return _OUTCOME_MAP.get(outcome, f"unknown:{outcome}")
+
+
+def downgrade_outcome_if_cart_short(
+    *,
+    outcome: str,
+    min_final: int | None,
+    cart_count: int | None,
+) -> tuple[str, bool]:
+    """Decide whether a done/call_user outcome should be downgraded to
+    stuck_premature_done because the final cart-state didn't reach the
+    task's MIN_FINAL_CART_COUNT threshold.
+
+    Returns (new_outcome, was_downgraded). Inverse of the visual-pixel
+    upgrade pattern in the runner: that one promotes premature_done to
+    done when the canvas has signal; this one demotes done to
+    premature_done when the cart hasn't filled.
+
+    `cart_count is None` (probe failed or no cart-state on the page)
+    counts as "below threshold" — the agent claimed success but we have
+    no evidence to corroborate it.
+    """
+    if min_final is None or outcome not in ("done", "call_user"):
+        return outcome, False
+    if cart_count is None or cart_count < min_final:
+        return "stuck_premature_done", True
+    return outcome, False

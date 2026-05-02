@@ -40,3 +40,11 @@ MAX_STEPS = 60
 
 # Task class (see docs/thesis.md): D — novel real-world e-commerce (overlay handling, variant-tolerant)
 TASK_CLASS = "D"
+
+# Cart-state final check: agent must leave ≥1 item in the bag at run end.
+# Without this, models that confabulate "I added a BILLY to the cart" after
+# the cart reverts to empty would score pass on outcome=done alone. The
+# runner reads cart-state via verify_cart_state() after the agent declares
+# done; if cart_count < MIN_FINAL_CART_COUNT, outcome is downgraded to
+# stuck_premature_done.
+MIN_FINAL_CART_COUNT = 1

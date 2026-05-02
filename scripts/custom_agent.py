@@ -31,7 +31,13 @@ from scripts.custom_agent.model import (
 )
 from scripts.custom_agent.actions import dispatch
 from scripts.custom_agent.cart_state import verify_cart_state
-from scripts.custom_agent.run_log import append_run, classify_failure, count_non_white_in_region, DEFAULT_LOG
+from scripts.custom_agent.run_log import (
+    DEFAULT_LOG,
+    append_run,
+    classify_failure,
+    count_non_white_in_region,
+    downgrade_outcome_if_cart_short,
+)
 from scripts.custom_agent.site_configs import match_site_config
 
 # Harness paths:
@@ -259,6 +265,37 @@ async def run(task_module) -> None:
                 outcome = terminal_kind
                 verification_overrode_premature_done = True
 
+        # Cart-state final check: if the task declares MIN_FINAL_CART_COUNT
+        # and the agent reports done/call_user but the cart hasn't reached
+        # the threshold, downgrade to stuck_premature_done. Catches
+        # confabulated "I added X to cart" reports when the actual cart
+        # state is empty (BILLY task observed Holo3 doing exactly this).
+        final_cart_count: int | None = None
+        final_cart_method: str | None = None
+        verification_downgraded_done: bool = False
+        min_final_cart = getattr(task_module, "MIN_FINAL_CART_COUNT", None)
+        if min_final_cart is not None and outcome in ("done", "call_user"):
+            try:
+                current_url = await page.url()
+                site_cfg = match_site_config(current_url)
+                cs = await verify_cart_state(page, site_cfg, current_url)
+                final_cart_count = cs.cart_items
+                final_cart_method = cs.verification_method
+                new_outcome, downgraded = downgrade_outcome_if_cart_short(
+                    outcome=outcome, min_final=min_final_cart, cart_count=final_cart_count,
+                )
+                if downgraded:
+                    print(
+                        f"[verification] final cart_count={final_cart_count} "
+                        f"< threshold={min_final_cart} (method={final_cart_method}) — "
+                        f"downgrading {outcome} -> {new_outcome}",
+                        file=sys.stderr,
+                    )
+                    outcome = new_outcome
+                    verification_downgraded_done = True
+            except Exception as e:
+                print(f"[verification] cart-state final check failed: {e}", file=sys.stderr)
+
         print(f"\n=== outcome: {outcome} | steps: {len(history)} | elapsed: {elapsed:.1f}s ===")
         row = {
             "task": task_module.__name__.rsplit(".", 1)[-1],
@@ -277,6 +314,12 @@ async def run(task_module) -> None:
             row["verification_threshold"] = verif_threshold
         if verification_overrode_premature_done:
             row["verification_overrode_premature_done"] = True
+        if min_final_cart is not None:
+            row["min_final_cart_count"] = min_final_cart
+            row["final_cart_count"] = final_cart_count
+            row["final_cart_method"] = final_cart_method
+        if verification_downgraded_done:
+            row["verification_downgraded_done"] = True
         append_run(DEFAULT_LOG, row)
         print(f"final screenshot: {FINAL_PNG}")
         print(f"per-step screenshots: {STEPS_DIR}")
