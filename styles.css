@@ -22,9 +22,27 @@ header.intro .built { color: var(--muted); font-size: 12px; }
 header.intro p { max-width: 78ch; }
 header.intro .legend {
   display: flex; flex-wrap: wrap; gap: 16px;
-  margin: 12px 0 24px; font-size: 12px; color: var(--muted);
+  margin: 12px 0 12px; font-size: 12px; color: var(--muted);
 }
 header.intro .legend b { color: var(--fg); }
+header.intro .legend-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 16px; row-gap: 6px;
+  margin: 0 0 24px; padding: 12px 14px;
+  background: #fff; border: 1px solid var(--line); border-radius: 6px;
+  font-size: 12px; color: var(--muted);
+  max-width: 78ch;
+}
+header.intro .legend-grid dt {
+  font-weight: 600; color: var(--fg); white-space: nowrap;
+}
+header.intro .legend-grid dd { margin: 0; }
+header.intro .legend-grid b { color: var(--fg); }
+header.intro .legend-grid code {
+  background: #eef1f6; padding: 1px 4px; border-radius: 3px;
+  font-size: 11px;
+}
 
 table.matrix {
   border-collapse: collapse;
