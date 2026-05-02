@@ -33,6 +33,11 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# Repo root must be on sys.path for `from scripts._regression_e2e import ...`
+# to resolve when invoked as `python scripts/regression_suite.py` (Python only
+# auto-adds the script's dir, not its parent).
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 UNIT_TESTS = {
     "regression_quant_default":  "tests/regression/test_swap_model_quant_defaults.py",
