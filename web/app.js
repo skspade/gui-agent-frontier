@@ -90,8 +90,19 @@ function renderIntro() {
       <p>${escape(data.intro)}</p>
       <div class="legend">
         ${legendBits}
-        <span><b>Cells:</b> k/n pass count · green = pass, red = fail, gray = not run.</span>
       </div>
+      <dl class="legend-grid">
+        <dt>k / n</dt>
+        <dd><b>k</b> = passing runs, <b>n</b> = total runs attempted for that (model × test) cell. e.g. <code>2/3</code> means 3 runs, 2 passed.</dd>
+        <dt>Cell color</dt>
+        <dd>Hue interpolates the pass ratio k/n: green at 1/1, red at 0/n. Gray = not yet run for this cell.</dd>
+        <dt>Pass</dt>
+        <dd>A run counts as a pass when its <code>category</code> is <code>pass</code> (legacy rows fall back to <code>outcome ∈ {done, call_user}</code>).</dd>
+        <dt>Cliff edge ▌</dt>
+        <dd>Marker on the rightmost test where a model still hits ≥70% pass rate — the boundary of what that model can do reliably across this row.</dd>
+        <dt>Click a cell</dt>
+        <dd>Opens the per-run side panel with category, step count, elapsed time, harness, and final screenshot (when available).</dd>
+      </dl>
     </header>`;
 }
 
